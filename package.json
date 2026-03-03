@@ -1,0 +1,17 @@
+{
+  "name": "nexus-ultra-v7",
+  "version": "7.0.0",
+  "description": "NEXUS ULTRA v7 — SPX Trading Dashboard + Telegram Alerts",
+  "main": "server.js",
+  "engines": {
+    "node": "18.x"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'no build needed'"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "node-fetch": "^3.3.2"
+  }
+}
