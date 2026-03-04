@@ -36,6 +36,32 @@ if (!globalThis.fetch) {
 // الداشبورد مباشرة من نفس مجلد السيرفر
 app.use(express.static(__dirname));
 
+// ── PWA routes
+app.get('/manifest.json',(req,res)=>{
+  res.setHeader('Content-Type','application/manifest+json');
+  res.sendFile(path.join(__dirname,'manifest.json'));
+});
+app.get('/sw.js',(req,res)=>{
+  res.setHeader('Content-Type','application/javascript');
+  res.setHeader('Service-Worker-Allowed','/');
+  res.sendFile(path.join(__dirname,'sw.js'));
+});
+// PWA icons placeholder
+app.get('/icon-:size.png',(req,res)=>{
+  // إرجاع SVG كـ PNG (بدون مكتبة صور)
+  const size=parseInt(req.params.size)||192;
+  const svg=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}">
+    <rect width="${size}" height="${size}" rx="${size*0.15}" fill="#03030c"/>
+    <circle cx="${size/2}" cy="${size*0.4}" r="${size*0.25}" fill="none" stroke="#5a6eff" stroke-width="${size*0.04}"/>
+    <path d="M ${size*0.35} ${size*0.4} L ${size*0.45} ${size*0.5} L ${size*0.65} ${size*0.3}" 
+          stroke="#22c55e" stroke-width="${size*0.05}" fill="none" stroke-linecap="round"/>
+    <rect x="${size*0.25}" y="${size*0.65}" width="${size*0.5}" height="${size*0.04}" rx="${size*0.02}" fill="#5a6eff"/>
+    <rect x="${size*0.3}" y="${size*0.73}" width="${size*0.4}" height="${size*0.03}" rx="${size*0.015}" fill="#333"/>
+  </svg>`;
+  res.setHeader('Content-Type','image/svg+xml');
+  res.send(svg);
+});
+
 // ── إعدادات (من Render Environment Variables)
 const TG_TOKEN = process.env.TG_TOKEN || '';
 const TG_CHAT  = process.env.TG_CHAT  || '';
@@ -53,7 +79,7 @@ const S = {
   bbU:0, bbL:0, bbB:0, atr:30, stV:0, stD:1,
   ema21:0, ema50:0, ema200:0, obv:0, obvE:0,
   fibH:0, fibL:0, history:[],
-  mktState:'REGULAR', isExt:false, dataSource:'Yahoo', lastSig:'WAIT', lastScore:0,
+  mktState:'REGULAR', isExt:false, dataSource:'Yahoo', lastSig:'WAIT', lastScore:0, ema9:0, vwap:0,
 };
 
 // ── حالة الصفقة
@@ -153,21 +179,105 @@ function calcST(h,l,c,n=10,f=3){
 //  حساب الإشارة
 // ══════════════════════════════════════════
 function computeSig(){
-  const p=S.price;
-  const bc=[
-    {pass:S.rsi<32},        {pass:S.macd>S.msig&&S.mhist>0&&S.macd<0},
-    {pass:S.sk<22},         {pass:p<S.bbL*1.008},
-    {pass:S.stD===1},       {pass:S.ema21>S.ema50},
-    {pass:S.obv>S.obvE},
+  const p = S.price;
+  if(!p || p===0) return {isBuy:false,isSell:false,bs:0,ss:0,bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],conviction:0};
+
+  // ══════════════════════════════════════════════════════
+  // نظام إشارات Intraday SPX — مؤشرات موزونة احترافياً
+  // المجموع الأقصى = 15 نقطة
+  // ══════════════════════════════════════════════════════
+
+  // ─── شروط الشراء CALL ───────────────────────────────
+  const bc = [
+    // SuperTrend صاعد — الأقوى (وزن 3)
+    { pass: S.stD === 1,
+      w:3, label:'SuperTrend↑' },
+
+    // السعر فوق VWAP — مهم جداً للإنترادي (وزن 3)
+    { pass: S.vwap>0 && p > S.vwap,
+      w:3, label:'P>VWAP' },
+
+    // EMA9 فوق EMA21 — زخم قصير المدى (وزن 2)
+    { pass: S.ema9>0 && S.ema9 > S.ema21,
+      w:2, label:'EMA9>EMA21' },
+
+    // MACD تقاطع صاعد — تأكيد الزخم (وزن 2)
+    { pass: S.macd > S.msig && S.mhist > 0,
+      w:2, label:'MACD↑' },
+
+    // RSI مناسب للشراء 40-65 (ليس في ذروة شراء) (وزن 2)
+    { pass: S.rsi >= 40 && S.rsi <= 65,
+      w:2, label:'RSI_zone' },
+
+    // Bollinger — السعر في النصف السفلي (وزن 2)
+    { pass: S.bbB>0 && p < S.bbB,
+      w:2, label:'P<BB_mid' },
+
+    // EMA21 > EMA50 — اتجاه عام صاعد (وزن 1)
+    { pass: S.ema21 > S.ema50,
+      w:1, label:'EMA21>50' },
   ];
-  const sc=[
-    {pass:S.rsi>68},        {pass:S.macd<S.msig&&S.mhist<0&&S.macd>0},
-    {pass:S.sk>78},         {pass:p>S.bbU*0.992},
-    {pass:S.stD===-1},      {pass:S.ema21<S.ema50},
-    {pass:S.obv<S.obvE},
+
+  // ─── شروط البيع PUT ────────────────────────────────
+  const sc = [
+    // SuperTrend هابط — الأقوى (وزن 3)
+    { pass: S.stD === -1,
+      w:3, label:'SuperTrend↓' },
+
+    // السعر تحت VWAP — مهم جداً للإنترادي (وزن 3)
+    { pass: S.vwap>0 && p < S.vwap,
+      w:3, label:'P<VWAP' },
+
+    // EMA9 تحت EMA21 — زخم هابط (وزن 2)
+    { pass: S.ema9>0 && S.ema9 < S.ema21,
+      w:2, label:'EMA9<EMA21' },
+
+    // MACD تقاطع هابط — تأكيد الزخم (وزن 2)
+    { pass: S.macd < S.msig && S.mhist < 0,
+      w:2, label:'MACD↓' },
+
+    // RSI في منطقة البيع 55-80 (وزن 2)
+    { pass: S.rsi >= 55 && S.rsi <= 80,
+      w:2, label:'RSI_zone' },
+
+    // Bollinger — السعر في النصف العلوي (وزن 2)
+    { pass: S.bbB>0 && p > S.bbB,
+      w:2, label:'P>BB_mid' },
+
+    // EMA21 < EMA50 — اتجاه عام هابط (وزن 1)
+    { pass: S.ema21 < S.ema50,
+      w:1, label:'EMA21<50' },
   ];
-  const bs=bc.filter(c=>c.pass).length, ss=sc.filter(c=>c.pass).length;
-  return {isBuy:bs>=2&&bs>ss, isSell:ss>=2&&ss>bs, bs, ss};
+
+  // ─── حساب النقاط ────────────────────────────────────
+  const bPassed = bc.filter(c=>c.pass);
+  const sPassed = sc.filter(c=>c.pass);
+  const bScore  = bPassed.reduce((s,c)=>s+c.w, 0);
+  const sScore  = sPassed.reduce((s,c)=>s+c.w, 0);
+  const bCount  = bPassed.length;
+  const sCount  = sPassed.length;
+  const maxScore= 15;
+  const bPct    = Math.round(bScore/maxScore*100);
+  const sPct    = Math.round(sScore/maxScore*100);
+  const bLabels = bPassed.map(c=>c.label);
+  const sLabels = sPassed.map(c=>c.label);
+
+  // ─── شرط الإشارة ────────────────────────────────────
+  // يجب: نقاط >= 7 (من 15) + شروط >= 3 + أقوى من الاتجاه المعاكس
+  // SuperTrend أو VWAP يجب أن يكون من الشروط المتحققة
+  const bHasCore = bPassed.some(c=>c.label==='SuperTrend↑'||c.label==='P>VWAP');
+  const sHasCore = sPassed.some(c=>c.label==='SuperTrend↓'||c.label==='P<VWAP');
+
+  const isBuy  = bScore>=7 && bCount>=3 && bScore>sScore && bHasCore;
+  const isSell = sScore>=7 && sCount>=3 && sScore>bScore && sHasCore;
+
+  return {
+    isBuy, isSell,
+    bs:bCount, ss:sCount,
+    bScore, sScore, bPct, sPct, maxScore,
+    bLabels, sLabels,
+    conviction: isBuy ? bPct : isSell ? sPct : 0
+  };
 }
 
 // ══════════════════════════════════════════
@@ -184,182 +294,130 @@ const UA  = {
 
 // ── جلب السعر الحي — يجرب 3 endpoints مختلفة
 async function fetchLivePrice(sym) {
-  // ══════════════════════════════════════════════════════════
-  // مصادر متعددة للسعر الحي — Pre/Regular/After-Hours
-  // الأولوية: Finnhub → Alpha Vantage → Yahoo v7 → Yahoo v8
-  // ══════════════════════════════════════════════════════════
+  const hdrs = {'User-Agent':'Mozilla/5.0','Accept':'application/json'};
+  const symFH = sym==='^GSPC' ? 'SPX' : sym.replace('^','');
+  const symAV = sym==='^GSPC' ? 'SPY' : sym.replace('^','');
   const encoded = encodeURIComponent(sym);
-  const hdrs = {
-    'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'Accept':'application/json',
-  };
 
-  // ── تحديد السيمبول لكل مصدر
-  // ^GSPC على Yahoo = SPX, لكن Finnhub/AV تستخدم ^SPX أو GSPC
-  const symFH = sym === '^GSPC' ? '^GSPC'  : sym;
-  const symAV = sym === '^GSPC' ? '^GSPC'  : sym;
-
-  // ────────────────────────────────────────
-  // المصدر 1: Yahoo Finance v7 (الأسرع والأكثر موثوقية)
-  // يدعم Pre-Market و After-Hours مباشرة
-  // ────────────────────────────────────────
-  for(const base of ['https://query1.finance.yahoo.com','https://query2.finance.yahoo.com']) {
-    try {
-      const url = `${base}/v7/finance/quote?symbols=${encoded}&fields=regularMarketPrice,preMarketPrice,postMarketPrice,marketState,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketChange,regularMarketChangePercent,preMarketChange,preMarketChangePercent,postMarketChange,postMarketChangePercent`;
-      const r = await fetch(url, {headers:hdrs, signal:AbortSignal.timeout(5000)});
-      if(!r.ok) continue;
-      const d = await r.json();
-      const qt = d?.quoteResponse?.result?.[0];
-      if(!qt) continue;
-
-      const state   = qt.marketState || 'REGULAR';
-      const isPre   = state === 'PRE'  || state === 'PREPRE';
-      const isPost  = state === 'POST' || state === 'POSTPOST';
-      const isClosed= state === 'CLOSED';
-
-      let price = qt.regularMarketPrice;
-      let isExt = false;
-      let change = qt.regularMarketChange || 0;
-      let changePct = qt.regularMarketChangePercent || 0;
-
-      if(isPre  && qt.preMarketPrice)  { price=qt.preMarketPrice;  isExt=true; change=qt.preMarketChange||0;  changePct=qt.preMarketChangePercent||0; }
-      if(isPost && qt.postMarketPrice) { price=qt.postMarketPrice; isExt=true; change=qt.postMarketChange||0; changePct=qt.postMarketChangePercent||0; }
-      if(!price) continue;
-
-      log(`[Yahoo_v7] SPX=${price.toFixed(2)} state=${state} src=${base.includes('query1')?'q1':'q2'}`);
-      return { price, isExt, state, change, changePct,
-               high: qt.regularMarketDayHigh||price,
-               low:  qt.regularMarketDayLow||price,
-               open: qt.regularMarketOpen||price,
-               prev: qt.regularMarketPreviousClose||price,
-               source: 'Yahoo_v7' };
-    } catch(e){ log(`[Yahoo] ${base} failed: ${e.message}`); }
-  }
-
-  // ────────────────────────────────────────
-  // المصدر 2: Yahoo Finance v8 chart meta
-  // يعطي السعر الحي من الـ meta مباشرة
-  // ────────────────────────────────────────
-  try {
-    const r = await fetch(`https://query2.finance.yahoo.com/v8/finance/chart/${encoded}?interval=1m&range=1d`, 
-                          {headers:hdrs, signal:AbortSignal.timeout(5000)});
-    if(r.ok) {
-      const d = await r.json();
-      const meta = d?.chart?.result?.[0]?.meta;
-      if(meta?.regularMarketPrice) {
-        const state = meta.marketState || 'REGULAR';
-        const isPre  = state==='PRE';
-        const isPost = state==='POST'||state==='POSTPOST';
-        let price = meta.regularMarketPrice;
-        let isExt = false;
-        if(isPre  && meta.preMarketPrice)  { price=meta.preMarketPrice;  isExt=true; }
-        if(isPost && meta.postMarketPrice) { price=meta.postMarketPrice; isExt=true; }
-        log(`[Yahoo v8 meta] SPX=${price.toFixed(2)} state=${state}`);
-        return { price, isExt, state,
-                 change: price - (meta.previousClose||price),
-                 changePct: meta.previousClose ? (price-meta.previousClose)/meta.previousClose*100 : 0,
-                 high: meta.regularMarketDayHigh||price,
-                 low:  meta.regularMarketDayLow||price,
-                 open: meta.regularMarketOpen||price,
-                 prev: meta.previousClose||price,
-                 source: 'Yahoo_v8' };
-      }
-    }
-  } catch(e){ log(`[Yahoo v8 meta] failed: ${e.message}`); }
-
-  // ────────────────────────────────────────
-  // المصدر 3: Finnhub (مجاني — 60 طلب/دقيقة)
-  // يدعم Pre-Market و After-Hours
-  // للتفعيل: أضف FINNHUB_KEY في Render Environment Variables
-  // احصل على مفتاح مجاني: finnhub.io
-  // ────────────────────────────────────────
-  const FINNHUB_KEY = process.env.FINNHUB_KEY || '';
+  // 1. Finnhub — الأفضل للـ Pre/After (رمز SPX بدون ^)
+  const FINNHUB_KEY = process.env.FINNHUB_KEY || RUNTIME_KEYS.finnhub || '';
   if(FINNHUB_KEY) {
     try {
-      // Finnhub يستخدم ^GSPC للـ S&P 500 Index
-      const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symFH}&token=${FINNHUB_KEY}`,
-                            {signal:AbortSignal.timeout(5000)});
+      const r = await fetch(
+        'https://finnhub.io/api/v1/quote?symbol='+symFH+'&token='+FINNHUB_KEY,
+        {signal:AbortSignal.timeout(5000)}
+      );
       if(r.ok) {
         const d = await r.json();
         if(d && d.c && d.c > 0) {
-          const price = d.c; // c = current price
-          const prev  = d.pc; // pc = previous close
-          const change = price - prev;
-          const changePct = prev ? change/prev*100 : 0;
-          // Finnhub لا يفرق بين Pre/Regular/After لكن يعطي السعر الحي دائماً
-          const now = new Date();
-          const h = now.getUTCHours() + (now.getUTCMinutes() / 60);
-          // ET = UTC-4 (صيف) أو UTC-5 (شتاء)
-          const etOffset = 4; // اضبط حسب الموسم
-          const etH = ((h - etOffset + 24) % 24);
-          const isRegular = etH >= 9.5 && etH < 16;
-          const isPre  = etH >= 4 && etH < 9.5;
-          const isPost = etH >= 16 && etH < 20;
-          const state = isRegular ? 'REGULAR' : isPre ? 'PRE' : isPost ? 'POST' : 'CLOSED';
-          log(`[Finnhub] SPX=${price.toFixed(2)} ET=${etH.toFixed(1)}h state=${state}`);
-          return { price, isExt: !isRegular && price > 0, state, change, changePct,
-                   high: d.h||price, low: d.l||price, open: d.o||price, prev,
-                   source: 'Finnhub' };
+          const price=d.c, prev=d.pc||d.c, chg=price-prev, pct=prev?chg/prev*100:0;
+          const now=new Date();
+          const etH=((now.getUTCHours()-4+24)%24)+now.getUTCMinutes()/60;
+          const day=now.getUTCDay();
+          let state='CLOSED', isExt=false;
+          if(day>=1&&day<=5){
+            if(etH>=4&&etH<9.5)   {state='PRE';     isExt=true;}
+            else if(etH>=9.5&&etH<16){state='REGULAR';isExt=false;}
+            else if(etH>=16&&etH<20) {state='POST';   isExt=true;}
+          }
+          log('[Finnhub OK] SPX='+price.toFixed(2)+' state='+state);
+          return {price,isExt,state,change:chg,changePct:pct,
+                  high:d.h||price,low:d.l||price,open:d.o||price,prev,source:'Finnhub'};
         }
-      }
-    } catch(e){ log(`[Finnhub] failed: ${e.message}`); }
+        log('[Finnhub] empty response: '+JSON.stringify(d));
+      } else { log('[Finnhub] HTTP '+r.status); }
+    } catch(e){ log('[Finnhub ERR] '+e.message); }
+  } else {
+    log('[Finnhub] FINNHUB_KEY missing — add to Render env vars');
   }
 
-  // ────────────────────────────────────────
-  // المصدر 4: Alpha Vantage (مجاني — 25 طلب/يوم)
-  // للتفعيل: أضف ALPHAVANTAGE_KEY في Render Environment Variables
-  // احصل على مفتاح مجاني: alphavantage.co
-  // ────────────────────────────────────────
-  const AV_KEY = process.env.ALPHAVANTAGE_KEY || '';
-  if(AV_KEY) {
+  // 2. Yahoo Finance v7 — Pre/After مدعوم
+  for(const base of ['https://query1.finance.yahoo.com','https://query2.finance.yahoo.com']) {
     try {
-      const avSym = sym === '^GSPC' ? 'SPY' : sym; // AV لا يدعم ^GSPC، نستخدم SPY كبديل
-      const r = await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${avSym}&apikey=${AV_KEY}`,
-                            {signal:AbortSignal.timeout(6000)});
-      if(r.ok) {
-        const d = await r.json();
-        const q = d?.['Global Quote'];
-        if(q && q['05. price']) {
-          const price = parseFloat(q['05. price']);
-          const prev  = parseFloat(q['08. previous close']);
-          const change = parseFloat(q['09. change']);
-          const changePct = parseFloat(q['10. change percent']);
-          log(`[AlphaVantage] ${avSym}=${price.toFixed(2)}`);
-          return { price, isExt: false, state: 'REGULAR', change, changePct,
-                   high: parseFloat(q['03. high'])||price,
-                   low:  parseFloat(q['04. low'])||price,
-                   open: parseFloat(q['02. open'])||price,
-                   prev, source: 'AlphaVantage' };
-        }
-      }
-    } catch(e){ log(`[AlphaVantage] failed: ${e.message}`); }
+      const fields='regularMarketPrice,preMarketPrice,postMarketPrice,marketState,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketChange,regularMarketChangePercent,preMarketChange,preMarketChangePercent,postMarketChange,postMarketChangePercent';
+      const r=await fetch(base+'/v7/finance/quote?symbols='+encoded+'&fields='+fields,
+        {headers:hdrs,signal:AbortSignal.timeout(6000)});
+      if(!r.ok) continue;
+      const qt=(await r.json())?.quoteResponse?.result?.[0];
+      if(!qt) continue;
+      const state=qt.marketState||'REGULAR';
+      const isPre=state==='PRE'||state==='PREPRE';
+      const isPost=state==='POST'||state==='POSTPOST';
+      let price=qt.regularMarketPrice,chg=qt.regularMarketChange||0,pct=qt.regularMarketChangePercent||0;
+      if(isPre&&qt.preMarketPrice)   {price=qt.preMarketPrice;  chg=qt.preMarketChange||0; pct=qt.preMarketChangePercent||0;}
+      if(isPost&&qt.postMarketPrice) {price=qt.postMarketPrice; chg=qt.postMarketChange||0;pct=qt.postMarketChangePercent||0;}
+      if(!price) continue;
+      log('[Yahoo v7 OK] SPX='+price.toFixed(2)+' state='+state);
+      return {price,isExt:isPre||isPost,state,change:chg,changePct:pct,
+              high:qt.regularMarketDayHigh||price,low:qt.regularMarketDayLow||price,
+              open:qt.regularMarketOpen||price,prev:qt.regularMarketPreviousClose||price,source:'Yahoo_v7'};
+    } catch(e){ log('[Yahoo v7 ERR] '+e.message); }
   }
 
-  // ────────────────────────────────────────
-  // المصدر 5: Stooq (مجاني بلا مفتاح — بيانات مؤخرة قليلاً)
-  // يعمل دائماً كـ last resort
-  // ────────────────────────────────────────
+  // 3. Yahoo v8 chart meta
   try {
-    const stooqSym = sym === '^GSPC' ? '^spx' : sym.toLowerCase();
-    const r = await fetch(`https://stooq.com/q/l/?s=${stooqSym}&f=sd2t2ohlcv&h&e=json`,
-                          {signal:AbortSignal.timeout(6000)});
-    if(r.ok) {
-      const d = await r.json();
-      const row = d?.symbols?.[0];
-      if(row && row.close && row.close > 0) {
-        const price = row.close;
-        log(`[Stooq] SPX=${price.toFixed(2)} (delayed)`);
-        return { price, isExt: false, state: 'DELAYED',
-                 change: row.close - row.open || 0,
-                 changePct: row.open ? (row.close-row.open)/row.open*100 : 0,
-                 high: row.high||price, low: row.low||price,
-                 open: row.open||price, prev: row.open||price,
-                 source: 'Stooq_delayed' };
+    const r=await fetch('https://query2.finance.yahoo.com/v8/finance/chart/'+encoded+'?interval=1m&range=1d',
+      {headers:hdrs,signal:AbortSignal.timeout(6000)});
+    if(r.ok){
+      const meta=(await r.json())?.chart?.result?.[0]?.meta;
+      if(meta?.regularMarketPrice){
+        const state=meta.marketState||'REGULAR';
+        const isPre=state==='PRE', isPost=state==='POST'||state==='POSTPOST';
+        let price=meta.regularMarketPrice;
+        if(isPre&&meta.preMarketPrice)   price=meta.preMarketPrice;
+        if(isPost&&meta.postMarketPrice) price=meta.postMarketPrice;
+        const prev=meta.previousClose||price;
+        log('[Yahoo v8 OK] SPX='+price.toFixed(2)+' state='+state);
+        return {price,isExt:isPre||isPost,state,
+                change:price-prev,changePct:prev?(price-prev)/prev*100:0,
+                high:meta.regularMarketDayHigh||price,low:meta.regularMarketDayLow||price,
+                open:meta.regularMarketOpen||price,prev,source:'Yahoo_v8'};
       }
     }
-  } catch(e){ log(`[Stooq] failed: ${e.message}`); }
+  } catch(e){ log('[Yahoo v8 ERR] '+e.message); }
 
-  log('⚠️ جميع المصادر فشلت — لا يوجد سعر حي');
+  // 4. Alpha Vantage
+  const AV_KEY=process.env.ALPHAVANTAGE_KEY||RUNTIME_KEYS.alphavantage||'';
+  if(AV_KEY){
+    try{
+      const r=await fetch('https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol='+symAV+'&apikey='+AV_KEY,
+        {signal:AbortSignal.timeout(8000)});
+      if(r.ok){
+        const q=(await r.json())?.['Global Quote'];
+        if(q&&q['05. price']){
+          const mult=sym==='^GSPC'?10:1;
+          const price=parseFloat(q['05. price'])*mult;
+          const prev=parseFloat(q['08. previous close'])*mult;
+          log('[AlphaVantage OK] '+symAV+'='+price.toFixed(2));
+          return {price,isExt:false,state:'REGULAR',
+                  change:parseFloat(q['09. change'])*mult,
+                  changePct:parseFloat(q['10. change percent']),
+                  high:parseFloat(q['03. high'])*mult||price,
+                  low:parseFloat(q['04. low'])*mult||price,
+                  open:parseFloat(q['02. open'])*mult||price,
+                  prev,source:'AlphaVantage'};
+        }
+      }
+    }catch(e){log('[AlphaVantage ERR] '+e.message);}
+  }
+
+  // 5. Stooq — آخر ملجأ (15 دقيقة مؤخر)
+  try{
+    const r=await fetch('https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=json',
+      {signal:AbortSignal.timeout(7000)});
+    if(r.ok){
+      const row=(await r.json())?.symbols?.[0];
+      if(row&&row.close>0){
+        const price=row.close, prev=row.open||price;
+        log('[Stooq OK] SPX='+price.toFixed(2)+' (15min delayed)');
+        return {price,isExt:false,state:'DELAYED',
+                change:price-prev,changePct:prev?(price-prev)/prev*100:0,
+                high:row.high||price,low:row.low||price,open:row.open||price,prev,source:'Stooq_15min'};
+      }
+    }
+  }catch(e){log('[Stooq ERR] '+e.message);}
+
+  log('ALL SOURCES FAILED');
   return null;
 }
 
@@ -444,8 +502,13 @@ async function loadMarketData(){
     S.atr = calcATR(h,l,c);
     const st=calcST(highs.slice(-100),lows.slice(-100),closes.slice(-100));
     S.stV=st.val; S.stD=st.dir;
-    const e21=ema(c,21),e50=ema(c,50),e200=ema(c,200);
-    S.ema21=e21.at(-1)||0; S.ema50=e50.at(-1)||0; S.ema200=e200.at(-1)||0;
+    const e9=ema(c,9),e21=ema(c,21),e50=ema(c,50),e200=ema(c,200);
+    S.ema9=e9.at(-1)||0; S.ema21=e21.at(-1)||0; S.ema50=e50.at(-1)||0; S.ema200=e200.at(-1)||0;
+    // VWAP تقريبي من اليومي (السعر × الحجم / الحجم الكلي آخر 20 شمعة)
+    const vwSlice=20, vwC=closes.slice(-vwSlice), vwV=vols.slice(-vwSlice);
+    const vwNum=vwC.reduce((s,p,i)=>s+p*(vwV[i]||1),0);
+    const vwDen=vwV.reduce((s,v)=>s+(v||1),0);
+    S.vwap = vwDen>0 ? vwNum/vwDen : S.price;
     const vAvg=vols.slice(-21,-1).reduce((a,b)=>a+b,0)/20||1;
     S.volR=(vols.at(-1)||0)/vAvg;
     let obv=0; const oa=[];
@@ -631,9 +694,9 @@ async function alertReEntry(type,score,reason){
 //  المراقبة الذكية
 // ══════════════════════════════════════════
 async function checkAlerts(){
-  const {isBuy,isSell,bs,ss}=computeSig();
+  const {isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction}=computeSig();
   const cur=isBuy?'BUY':isSell?'SELL':'WAIT';
-  const score=isBuy?bs:isSell?ss:0;
+  const score=isBuy?bScore:isSell?sScore:0;
   const p=S.price, prev=S.lastSig;
 
   if(TRADE.active){
@@ -746,11 +809,11 @@ app.get('/api/market',(req,res)=>{
     rsi:S.rsi, macd:S.macd, msig:S.msig, mhist:S.mhist,
     sk:S.sk, sd:S.sd, bbU:S.bbU, bbL:S.bbL, bbB:S.bbB,
     atr:S.atr, stV:S.stV, stD:S.stD,
-    ema21:S.ema21, ema50:S.ema50, ema200:S.ema200,
+    ema9:S.ema9, ema21:S.ema21, ema50:S.ema50, ema200:S.ema200, vwap:S.vwap,
     obv:S.obv, obvE:S.obvE, fibH:S.fibH, fibL:S.fibL,
     isExt:S.isExt||false, dataSource:S.dataSource||'Yahoo',
     history:S.history.slice(-300),
-    sig:{isBuy,isSell,bs,ss},
+    sig:{isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction},
     trade:{
       active:TRADE.active, type:TRADE.type, entry:TRADE.entry,
       tp1:TRADE.tp1, tp2:TRADE.tp2, tp3:TRADE.tp3,
@@ -763,7 +826,117 @@ app.get('/api/market',(req,res)=>{
   });
 });
 
+// ── استقبال مفاتيح API من الداشبورد وحفظها في السيرفر
+// بدلاً من Render env vars — المفاتيح تُرسَل مرة واحدة وتبقى في الذاكرة
+const RUNTIME_KEYS = { finnhub: '', alphavantage: '' };
+
+app.post('/api/keys',(req,res)=>{
+  const {finnhub, alphavantage} = req.body || {};
+  if(finnhub)      { RUNTIME_KEYS.finnhub      = finnhub;      log('🔑 Finnhub key received'); }
+  if(alphavantage) { RUNTIME_KEYS.alphavantage  = alphavantage; log('🔑 AlphaVantage key received'); }
+  res.json({ok:true, hasFinnhub:!!RUNTIME_KEYS.finnhub, hasAV:!!RUNTIME_KEYS.alphavantage});
+});
+
+app.get('/api/keys/status',(req,res)=>{
+  res.json({
+    hasFinnhub:    !!RUNTIME_KEYS.finnhub      || !!process.env.FINNHUB_KEY,
+    hasAV:         !!RUNTIME_KEYS.alphavantage  || !!process.env.ALPHAVANTAGE_KEY,
+    source:        'runtime'
+  });
+});
+
 // Keep-alive ping
+// ══ أخبار مالية حية — 5 مصادر عربية وإنجليزية ══
+const NEWS_CACHE = { data:[], ts:0 };
+const NEWS_TTL   = 10 * 60 * 1000; // 10 دقائق
+
+async function fetchRSS(url, src, lang) {
+  try {
+    const r = await fetch(url, {
+      headers: {'User-Agent':'Mozilla/5.0','Accept':'application/rss+xml,text/xml,*/*'},
+      signal: AbortSignal.timeout(7000)
+    });
+    if(!r.ok) { log(`[News] ${src} HTTP ${r.status}`); return []; }
+    const xml = await r.text();
+    // parse RSS items
+    const items = [];
+    const itemRx = /<item[^>]*>([\s\S]*?)<\/item>/gi;
+    let m;
+    while((m = itemRx.exec(xml)) !== null && items.length < 5) {
+      const block = m[1];
+      const title = (block.match(/<title[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1]?.trim() || '';
+      const link  = (block.match(/<link[^>]*>([^<]+)<\/link>/)  || block.match(/<link[^>]*href="([^"]+)"/)  || [])[1]?.trim() || '';
+      const date  = (block.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/) || block.match(/<dc:date[^>]*>([\s\S]*?)<\/dc:date>/) || [])[1]?.trim() || '';
+      const desc  = ((block.match(/<description[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) || [])[1] || '')
+                    .replace(/<[^>]+>/g,'').trim().slice(0,120);
+      if(title.length > 5) {
+        items.push({ title, link, date, desc, src, lang,
+          ts: date ? new Date(date).getTime() : Date.now() });
+      }
+    }
+    log(`[News] ${src}: ${items.length} items`);
+    return items;
+  } catch(e) { log(`[News] ${src} ERR: ${e.message}`); return []; }
+}
+
+async function fetchAllNews() {
+  if(Date.now() - NEWS_CACHE.ts < NEWS_TTL && NEWS_CACHE.data.length > 0)
+    return NEWS_CACHE.data;
+
+  const feeds = [
+    // ══ مصادر عربية حصراً ══
+    { url:'https://www.argaam.com/ar/rss/feeds/1',                              src:'أرقام',        lang:'ar' },
+    { url:'https://arabic.cnbc.com/id/100727362/device/rss/rss.html',           src:'CNBC عربية',   lang:'ar' },
+    { url:'https://arabic.reuters.com/rssFeed/businessNews',                     src:'رويترز عربي',  lang:'ar' },
+    { url:'https://www.alarabiya.net/alandalus/rss.xml',                         src:'العربية',      lang:'ar' },
+    { url:'https://www.mubasher.info/news/rss?topics=markets',                   src:'مباشر',        lang:'ar' },
+    { url:'https://al-ain.com/rss/economy',                                      src:'العين الاقتصادي', lang:'ar' },
+    { url:'https://www.alborsanews.com/feed',                                    src:'البورصة نيوز',  lang:'ar' },
+  ];
+
+  const results = await Promise.allSettled(
+    feeds.map(f => fetchRSS(f.url, f.src, f.lang))
+  );
+
+  let all = [];
+  results.forEach(r => { if(r.status==='fulfilled') all = all.concat(r.value); });
+  // ترتيب حسب التاريخ (الأحدث أولاً)
+  all.sort((a,b) => (b.ts||0) - (a.ts||0));
+
+  NEWS_CACHE.data = all.slice(0, 30);
+  NEWS_CACHE.ts   = Date.now();
+  log(`[News] Total: ${NEWS_CACHE.data.length} items from ${feeds.length} sources`);
+  return NEWS_CACHE.data;
+}
+
+// ── API endpoint للأخبار
+app.get('/api/news', async(req,res) => {
+  try {
+    const news = await fetchAllNews();
+    res.json({ ok:true, count:news.length, news, ts:Date.now() });
+  } catch(e) {
+    res.status(500).json({ ok:false, error:e.message, news:[] });
+  }
+});
+
+// ── API endpoint للتقويم الاقتصادي (Finnhub إذا وُجد المفتاح)
+app.get('/api/calendar', async(req,res) => {
+  try {
+    const FHK = process.env.FINNHUB_KEY || RUNTIME_KEYS.finnhub || '';
+    if(!FHK) { res.json({ok:false, msg:'FINNHUB_KEY مطلوب', events:[]}); return; }
+    const today = new Date().toISOString().split('T')[0];
+    const r = await fetch(
+      `https://finnhub.io/api/v1/calendar/economic?from=${today}&to=${today}&token=${FHK}`,
+      {signal:AbortSignal.timeout(6000)}
+    );
+    if(!r.ok) { res.json({ok:false, msg:'HTTP '+r.status, events:[]}); return; }
+    const d = await r.json();
+    res.json({ok:true, events: d.economicCalendar || []});
+  } catch(e) {
+    res.json({ok:false, error:e.message, events:[]});
+  }
+});
+
 app.get('/ping',(req,res)=>res.json({
   status:'ok', price:S.price, sig:S.lastSig,
   trade:TRADE.active, uptime:Math.round(process.uptime())+'s'
