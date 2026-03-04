@@ -684,6 +684,29 @@ window.onunhandledrejection = function(e) {
   e.preventDefault();
 };
 </script>
+
+  <!-- ══ PWA — تثبيت على الآيفون والأندرويد ══ -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#5a6eff">
+  <meta name="mobile-web-app-capable" content="yes">
+
+  <!-- آيفون / iOS Safari -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="NEXUS v7">
+
+  <!-- أيقونة الآيفون (SVG تلقائية) -->
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='80' fill='%2303030c'/%3E%3Ccircle cx='256' cy='200' r='120' fill='none' stroke='%235a6eff' stroke-width='20'/%3E%3Cpath d='M 180 200 L 220 240 L 310 160' stroke='%2322c55e' stroke-width='25' fill='none' stroke-linecap='round'/%3E%3Crect x='150' y='320' width='212' height='16' rx='8' fill='%235a6eff'/%3E%3Crect x='180' y='350' width='152' height='12' rx='6' fill='%23444'/%3E%3C/svg%3E">
+
+  <!-- splash screen للآيفون -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <style>
+    /* Splash screen أثناء تحميل التطبيق */
+    @media (display-mode: standalone) {
+      body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+    }
+  </style>
+
 </head>
 <body>
 <div class="gbg"></div>
@@ -1805,7 +1828,7 @@ window.onunhandledrejection = function(e) {
 <script>
 'use strict';
 // ─── State
-const S={price:0,prev:0,open:0,high:0,low:0,vol:0,atr:0,rsi:0,macd:0,msig:0,mhist:0,sk:0,sd:0,bbU:0,bbL:0,bbB:0,stV:0,stD:1,ema21:0,ema50:0,ema200:0,obv:0,obvE:0,volR:1,fibH:0,fibL:0,history:[],lastSig:null,lastScore:0};
+const S={price:0,prev:0,open:0,high:0,low:0,vol:0,atr:0,rsi:0,macd:0,msig:0,mhist:0,sk:0,sd:0,bbU:0,bbL:0,bbB:0,stV:0,stD:1,ema9:0,ema21:0,ema50:0,ema200:0,vwap:0,obv:0,obvE:0,volR:1,fibH:0,fibL:0,history:[],lastSig:null,lastScore:0};
 const TG={tok:'',cid:''};
 let autoAlert=false,chartObj=null,cSym='^GSPC',cName='S&P 500';
 // ── Smart CORS Proxy — يجرب بدون proxy أولاً ثم fallback
@@ -1941,70 +1964,104 @@ function calcST(h,l,c,n=10,f=3){if(c.length<n+2)return{val:c.at(-1)||0,dir:1};co
 
 // ─── Signal
 function computeSig(){
-  const p=S.price, atr=S.atr||20;
-  // ─── شروط الشراء (12 محور موزون)
-  const bc=[
-    {nm:'RSI < 35 (ذروة بيع)',       pass:S.rsi<35,         w:1.5, cat:'momentum'},
-    {nm:'MACD تقاطع صاعد',           pass:S.macd>S.msig&&S.mhist>0&&S.macd<0, w:2.0, cat:'trend'},
-    {nm:'StochRSI < 25',             pass:S.sk<25,           w:1.5, cat:'momentum'},
-    {nm:'سعر قرب BB السفلي',         pass:p<S.bbL*1.010,    w:1.5, cat:'structure'},
-    {nm:'Supertrend صاعد',           pass:S.stD===1,         w:2.0, cat:'trend'},
-    {nm:'EMA21 > EMA50',             pass:S.ema21>S.ema50,   w:1.5, cat:'trend'},
-    {nm:'EMA50 > EMA200',            pass:S.ema50>S.ema200,  w:1.0, cat:'trend'},
-    {nm:'OBV ضغط شراء',             pass:S.obv>S.obvE,      w:1.5, cat:'volume'},
-    {nm:'حجم أعلى من المتوسط',      pass:S.volR>1.1,        w:1.0, cat:'volume'},
-    {nm:'RSI تصاعدي',               pass:S.rsi>30&&S.rsi<55,w:0.5, cat:'momentum'},
-    {nm:'MACD هيستوغرام يتحسن',     pass:S.mhist>0,         w:1.0, cat:'trend'},
-    {nm:'السعر فوق EMA200',         pass:p>S.ema200,        w:1.0, cat:'structure'},
+  const p = S.price;
+  if(!p || p===0) return {isBuy:false,isSell:false,bs:0,ss:0,bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],conviction:0};
+
+  // ══════════════════════════════════════════════════════
+  // نظام إشارات Intraday SPX — مؤشرات موزونة احترافياً
+  // المجموع الأقصى = 15 نقطة
+  // ══════════════════════════════════════════════════════
+
+  // ─── شروط الشراء CALL ───────────────────────────────
+  const bc = [
+    // SuperTrend صاعد — الأقوى (وزن 3)
+    { pass: S.stD === 1,
+      w:3, label:'SuperTrend↑' },
+
+    // السعر فوق VWAP — مهم جداً للإنترادي (وزن 3)
+    { pass: S.vwap>0 && p > S.vwap,
+      w:3, label:'P>VWAP' },
+
+    // EMA9 فوق EMA21 — زخم قصير المدى (وزن 2)
+    { pass: S.ema9>0 && S.ema9 > S.ema21,
+      w:2, label:'EMA9>EMA21' },
+
+    // MACD تقاطع صاعد — تأكيد الزخم (وزن 2)
+    { pass: S.macd > S.msig && S.mhist > 0,
+      w:2, label:'MACD↑' },
+
+    // RSI مناسب للشراء 40-65 (ليس في ذروة شراء) (وزن 2)
+    { pass: S.rsi >= 40 && S.rsi <= 65,
+      w:2, label:'RSI_zone' },
+
+    // Bollinger — السعر في النصف السفلي (وزن 2)
+    { pass: S.bbB>0 && p < S.bbB,
+      w:2, label:'P<BB_mid' },
+
+    // EMA21 > EMA50 — اتجاه عام صاعد (وزن 1)
+    { pass: S.ema21 > S.ema50,
+      w:1, label:'EMA21>50' },
   ];
-  // ─── شروط البيع (12 محور موزون)
-  const sc=[
-    {nm:'RSI > 65 (ذروة شراء)',      pass:S.rsi>65,          w:1.5, cat:'momentum'},
-    {nm:'MACD تقاطع هابط',          pass:S.macd<S.msig&&S.mhist<0&&S.macd>0, w:2.0, cat:'trend'},
-    {nm:'StochRSI > 75',             pass:S.sk>75,            w:1.5, cat:'momentum'},
-    {nm:'سعر قرب BB العلوي',        pass:p>S.bbU*0.990,     w:1.5, cat:'structure'},
-    {nm:'Supertrend هابط',           pass:S.stD===-1,         w:2.0, cat:'trend'},
-    {nm:'EMA21 < EMA50',             pass:S.ema21<S.ema50,    w:1.5, cat:'trend'},
-    {nm:'EMA50 < EMA200',            pass:S.ema50<S.ema200,   w:1.0, cat:'trend'},
-    {nm:'OBV ضغط بيع',              pass:S.obv<S.obvE,       w:1.5, cat:'volume'},
-    {nm:'حجم بيع مرتفع',           pass:S.volR>1.1&&S.stD===-1, w:1.0, cat:'volume'},
-    {nm:'RSI تنازلي',               pass:S.rsi<70&&S.rsi>45, w:0.5, cat:'momentum'},
-    {nm:'MACD هيستوغرام يتدهور',    pass:S.mhist<0,          w:1.0, cat:'trend'},
-    {nm:'السعر تحت EMA200',         pass:p<S.ema200,         w:1.0, cat:'structure'},
+
+  // ─── شروط البيع PUT ────────────────────────────────
+  const sc = [
+    // SuperTrend هابط — الأقوى (وزن 3)
+    { pass: S.stD === -1,
+      w:3, label:'SuperTrend↓' },
+
+    // السعر تحت VWAP — مهم جداً للإنترادي (وزن 3)
+    { pass: S.vwap>0 && p < S.vwap,
+      w:3, label:'P<VWAP' },
+
+    // EMA9 تحت EMA21 — زخم هابط (وزن 2)
+    { pass: S.ema9>0 && S.ema9 < S.ema21,
+      w:2, label:'EMA9<EMA21' },
+
+    // MACD تقاطع هابط — تأكيد الزخم (وزن 2)
+    { pass: S.macd < S.msig && S.mhist < 0,
+      w:2, label:'MACD↓' },
+
+    // RSI في منطقة البيع 55-80 (وزن 2)
+    { pass: S.rsi >= 55 && S.rsi <= 80,
+      w:2, label:'RSI_zone' },
+
+    // Bollinger — السعر في النصف العلوي (وزن 2)
+    { pass: S.bbB>0 && p > S.bbB,
+      w:2, label:'P>BB_mid' },
+
+    // EMA21 < EMA50 — اتجاه عام هابط (وزن 1)
+    { pass: S.ema21 < S.ema50,
+      w:1, label:'EMA21<50' },
   ];
 
-  // حساب الوزن الإجمالي
-  const bScore = bc.filter(c=>c.pass).length;
-  const sScore = sc.filter(c=>c.pass).length;
-  const bWeight = bc.filter(c=>c.pass).reduce((a,c)=>a+c.w,0);
-  const sWeight = sc.filter(c=>c.pass).reduce((a,c)=>a+c.w,0);
+  // ─── حساب النقاط ────────────────────────────────────
+  const bPassed = bc.filter(c=>c.pass);
+  const sPassed = sc.filter(c=>c.pass);
+  const bScore  = bPassed.reduce((s,c)=>s+c.w, 0);
+  const sScore  = sPassed.reduce((s,c)=>s+c.w, 0);
+  const bCount  = bPassed.length;
+  const sCount  = sPassed.length;
+  const maxScore= 15;
+  const bPct    = Math.round(bScore/maxScore*100);
+  const sPct    = Math.round(sScore/maxScore*100);
+  const bLabels = bPassed.map(c=>c.label);
+  const sLabels = sPassed.map(c=>c.label);
 
-  // تصنيف حسب الفئات
-  const bCats = {trend:0,momentum:0,volume:0,structure:0};
-  const sCats = {trend:0,momentum:0,volume:0,structure:0};
-  bc.filter(c=>c.pass).forEach(c=>bCats[c.cat]++);
-  sc.filter(c=>c.pass).forEach(c=>sCats[c.cat]++);
+  // ─── شرط الإشارة ────────────────────────────────────
+  // يجب: نقاط >= 7 (من 15) + شروط >= 3 + أقوى من الاتجاه المعاكس
+  // SuperTrend أو VWAP يجب أن يكون من الشروط المتحققة
+  const bHasCore = bPassed.some(c=>c.label==='SuperTrend↑'||c.label==='P>VWAP');
+  const sHasCore = sPassed.some(c=>c.label==='SuperTrend↓'||c.label==='P<VWAP');
 
-  // الإشارة تحتاج 3+ شروط + وزن 4+ + شرط ترند واحد
-  const bTrend = bCats.trend >= 1;
-  const sTrend = sCats.trend >= 1;
-  const isBuy  = bScore>=3 && bWeight>=4.0 && bTrend && bScore>sScore;
-  const isSell = sScore>=3 && sWeight>=4.0 && sTrend && sScore>bScore;
+  const isBuy  = bScore>=7 && bCount>=3 && bScore>sScore && bHasCore;
+  const isSell = sScore>=7 && sCount>=3 && sScore>bScore && sHasCore;
 
-  // قوة الإشارة (0–7 موحّد للتوافق)
-  const normBs = Math.min(Math.round(bWeight/2.2),7);
-  const normSs = Math.min(Math.round(sWeight/2.2),7);
-
-  return{
+  return {
     isBuy, isSell,
-    bs: normBs, ss: normSs,
-    bWeight, sWeight,
-    bScore, sScore,
-    bCats, sCats,
-    bc, sc,
-    conviction: isBuy? (bWeight/(bWeight+sWeight)*100).toFixed(0)
-               :isSell?(sWeight/(bWeight+sWeight)*100).toFixed(0)
-               :'--',
+    bs:bCount, ss:sCount,
+    bScore, sScore, bPct, sPct, maxScore,
+    bLabels, sLabels,
+    conviction: isBuy ? bPct : isSell ? sPct : 0
   };
 }
 
@@ -2047,151 +2104,96 @@ async function fetchRT(sym){
 }
 
 async function fetchRTExt(sym){
-  // ══════════════════════════════════════════════════════
-  // 5 مصادر للسعر الحي — Pre/Regular/After/Closed
-  // الأولوية: Yahoo v7 → Yahoo v8 → Finnhub → AV → Stooq
-  // ══════════════════════════════════════════════════════
+  const hdrs={'Accept':'application/json','User-Agent':'Mozilla/5.0'};
   const enc=encodeURIComponent(sym);
-  const hdrs={'Accept':'application/json','User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'};
+  const symFH=sym==='^GSPC'?'SPX':sym.replace('^','');
 
-  // ── دالة مساعدة: تحديد حالة السوق من السعة الزمنية
   function guessState(){
     const now=new Date();
-    const utcH=now.getUTCHours()+now.getUTCMinutes()/60;
-    const etH=((utcH-4+24)%24); // ET تقريبي (UTC-4 صيف)
+    const etH=((now.getUTCHours()-4+24)%24)+now.getUTCMinutes()/60;
     const day=now.getUTCDay();
     if(day===0||day===6) return 'CLOSED';
-    if(etH>=4&&etH<9.5)  return 'PRE';
-    if(etH>=9.5&&etH<16) return 'REGULAR';
-    if(etH>=16&&etH<20)  return 'POST';
+    if(etH>=4  &&etH<9.5)  return 'PRE';
+    if(etH>=9.5&&etH<16)   return 'REGULAR';
+    if(etH>=16 &&etH<20)   return 'POST';
     return 'CLOSED';
   }
-
-  // ── دالة بناء النتيجة الموحدة
-  function buildResult(price,state,change,changePct,high,low,open,prev,src){
-    const isPre  = state==='PRE'||state==='PREPRE';
-    const isPost = state==='POST'||state==='POSTPOST';
-    return{price,isExt:isPre||isPost,state,change,changePct,high,low,open,prev,source:src};
+  function build(price,state,chg,pct,h,l,o,prev,src){
+    return{price,isExt:state==='PRE'||state==='POST',state,change:chg,changePct:pct,high:h,low:l,open:o,prev,source:src};
   }
 
-  // ──────────────────────────────────────────
-  // المصدر 1: Yahoo Finance v7 (الأسرع والأدق)
-  // يدعم Pre-Market و After-Hours مباشرة
-  // ──────────────────────────────────────────
-  for(const base of ['https://query1.finance.yahoo.com','https://query2.finance.yahoo.com']){
+  // 1. Finnhub (الأفضل لـ Pre/After)
+  const FHK=window._FINNHUB_KEY||localStorage.getItem('nexus_finnhub')||'';
+  if(FHK){
     try{
-      const fields='regularMarketPrice,preMarketPrice,postMarketPrice,marketState,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketChange,regularMarketChangePercent,preMarketChange,preMarketChangePercent,postMarketChange,postMarketChangePercent';
-      const r=await fetch(P+base+'/v7/finance/quote?symbols='+enc+'&fields='+fields,
-        {headers:hdrs,signal:AbortSignal.timeout(5000)});
-      if(!r.ok) continue;
-      const qt=(await r.json())?.quoteResponse?.result?.[0];
-      if(!qt) continue;
-      const state=qt.marketState||'REGULAR';
-      const isPre  =state==='PRE'||state==='PREPRE';
-      const isPost =state==='POST'||state==='POSTPOST';
-      let price=qt.regularMarketPrice,chg=qt.regularMarketChange||0,pct=qt.regularMarketChangePercent||0;
-      if(isPre  &&qt.preMarketPrice) {price=qt.preMarketPrice; chg=qt.preMarketChange||0; pct=qt.preMarketChangePercent||0;}
-      if(isPost &&qt.postMarketPrice){price=qt.postMarketPrice;chg=qt.postMarketChange||0;pct=qt.postMarketChangePercent||0;}
-      if(!price) continue;
-      console.log('[Yahoo v7]',base.includes('query1')?'q1':'q2','SPX='+price.toFixed(2),'state='+state);
-      return buildResult(price,state,chg,pct,
-        qt.regularMarketDayHigh||price,qt.regularMarketDayLow||price,
-        qt.regularMarketOpen||price,qt.regularMarketPreviousClose||price,'Yahoo_v7');
-    }catch(e){console.warn('[Yahoo v7]',e.message);}
-  }
-
-  // ──────────────────────────────────────────
-  // المصدر 2: Yahoo Finance v8 chart meta
-  // ──────────────────────────────────────────
-  try{
-    const r=await fetch(P+'https://query2.finance.yahoo.com/v8/finance/chart/'+enc+'?interval=1m&range=1d',
-      {headers:hdrs,signal:AbortSignal.timeout(5000)});
-    if(r.ok){
-      const meta=(await r.json())?.chart?.result?.[0]?.meta;
-      if(meta?.regularMarketPrice){
-        const state=meta.marketState||'REGULAR';
-        const isPre=state==='PRE',isPost=state==='POST'||state==='POSTPOST';
-        let price=meta.regularMarketPrice;
-        if(isPre&&meta.preMarketPrice)   price=meta.preMarketPrice;
-        if(isPost&&meta.postMarketPrice) price=meta.postMarketPrice;
-        const prev=meta.previousClose||price;
-        console.log('[Yahoo v8 meta] SPX='+price.toFixed(2),'state='+state);
-        return buildResult(price,state,price-prev,prev?(price-prev)/prev*100:0,
-          meta.regularMarketDayHigh||price,meta.regularMarketDayLow||price,
-          meta.regularMarketOpen||price,prev,'Yahoo_v8');
-      }
-    }
-  }catch(e){console.warn('[Yahoo v8]',e.message);}
-
-  // ──────────────────────────────────────────
-  // المصدر 3: Finnhub (مجاني — 60 req/min)
-  // للتفعيل: أضف FINNHUB_KEY في الداشبورد Settings
-  // احصل على مفتاح مجاني: finnhub.io/register
-  // ──────────────────────────────────────────
-  const FINNHUB_KEY = window._FINNHUB_KEY || localStorage.getItem('nexus_finnhub') || '';
-  if(FINNHUB_KEY){
-    try{
-      const r=await fetch(`https://finnhub.io/api/v1/quote?symbol=${sym==='%5EGSPC'?'^GSPC':sym}&token=${FINNHUB_KEY}`,
+      const r=await fetch('https://finnhub.io/api/v1/quote?symbol='+symFH+'&token='+FHK,
         {signal:AbortSignal.timeout(5000)});
       if(r.ok){
         const d=await r.json();
         if(d&&d.c>0){
-          const price=d.c,prev=d.pc,chg=price-prev,pct=prev?chg/prev*100:0;
+          const price=d.c,prev=d.pc||d.c,chg=price-prev,pct=prev?chg/prev*100:0;
           const state=guessState();
-          console.log('[Finnhub] SPX='+price.toFixed(2),'state='+state);
-          return buildResult(price,state,chg,pct,d.h||price,d.l||price,d.o||price,prev,'Finnhub');
+          console.log('[Finnhub OK] SPX='+price.toFixed(2),'state='+state);
+          return build(price,state,chg,pct,d.h||price,d.l||price,d.o||price,prev,'Finnhub');
         }
+        console.warn('[Finnhub] empty:',d);
       }
-    }catch(e){console.warn('[Finnhub]',e.message);}
+    }catch(e){console.warn('[Finnhub ERR]',e.message);}
   }
 
-  // ──────────────────────────────────────────
-  // المصدر 4: Alpha Vantage — SPY كبديل (مجاني)
-  // للتفعيل: أضف ALPHAVANTAGE_KEY في Settings
-  // احصل على مفتاح مجاني: alphavantage.co/support
-  // ──────────────────────────────────────────
-  const AV_KEY = window._AV_KEY || localStorage.getItem('nexus_av') || '';
-  if(AV_KEY){
+  // 2. Yahoo v7
+  for(const base of ['https://query1.finance.yahoo.com','https://query2.finance.yahoo.com']){
     try{
-      const r=await fetch(`https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=SPY&apikey=${AV_KEY}`,
-        {signal:AbortSignal.timeout(8000)});
-      if(r.ok){
-        const q=(await r.json())?.['Global Quote'];
-        if(q&&q['05. price']){
-          const price=parseFloat(q['05. price'])*10; // SPY*10 ≈ SPX تقريباً
-          const prev=parseFloat(q['08. previous close'])*10;
-          const chg=parseFloat(q['09. change'])*10;
-          const pct=parseFloat(q['10. change percent']);
-          const state=guessState();
-          console.log('[AlphaVantage] SPY≈SPX='+price.toFixed(2),'state='+state);
-          return buildResult(price,state,chg,pct,
-            parseFloat(q['03. high'])*10||price,parseFloat(q['04. low'])*10||price,
-            parseFloat(q['02. open'])*10||price,prev,'AlphaVantage');
-        }
-      }
-    }catch(e){console.warn('[AlphaVantage]',e.message);}
+      const fields='regularMarketPrice,preMarketPrice,postMarketPrice,marketState,regularMarketDayHigh,regularMarketDayLow,regularMarketOpen,regularMarketPreviousClose,regularMarketChange,regularMarketChangePercent,preMarketChange,preMarketChangePercent,postMarketChange,postMarketChangePercent';
+      const r=await fetch(P+base+'/v7/finance/quote?symbols='+enc+'&fields='+fields,
+        {headers:hdrs,signal:AbortSignal.timeout(6000)});
+      if(!r.ok) continue;
+      const qt=(await r.json())?.quoteResponse?.result?.[0];
+      if(!qt) continue;
+      const state=qt.marketState||'REGULAR';
+      const isPre=state==='PRE'||state==='PREPRE', isPost=state==='POST'||state==='POSTPOST';
+      let price=qt.regularMarketPrice,chg=qt.regularMarketChange||0,pct=qt.regularMarketChangePercent||0;
+      if(isPre&&qt.preMarketPrice)  {price=qt.preMarketPrice; chg=qt.preMarketChange||0;pct=qt.preMarketChangePercent||0;}
+      if(isPost&&qt.postMarketPrice){price=qt.postMarketPrice;chg=qt.postMarketChange||0;pct=qt.postMarketChangePercent||0;}
+      if(!price) continue;
+      console.log('[Yahoo v7 OK] SPX='+price.toFixed(2),'state='+state);
+      return build(price,state,chg,pct,qt.regularMarketDayHigh||price,qt.regularMarketDayLow||price,qt.regularMarketOpen||price,qt.regularMarketPreviousClose||price,'Yahoo_v7');
+    }catch(e){console.warn('[Yahoo v7 ERR]',e.message);}
   }
 
-  // ──────────────────────────────────────────
-  // المصدر 5: Stooq — مجاني بلا مفتاح
-  // بيانات مؤخرة 15 دقيقة لكن تعمل دائماً
-  // ──────────────────────────────────────────
+  // 3. Yahoo v8
+  try{
+    const r=await fetch(P+'https://query2.finance.yahoo.com/v8/finance/chart/'+enc+'?interval=1m&range=1d',
+      {headers:hdrs,signal:AbortSignal.timeout(6000)});
+    if(r.ok){
+      const meta=(await r.json())?.chart?.result?.[0]?.meta;
+      if(meta?.regularMarketPrice){
+        const state=meta.marketState||'REGULAR';
+        let price=meta.regularMarketPrice;
+        const isPre=state==='PRE',isPost=state==='POST'||state==='POSTPOST';
+        if(isPre&&meta.preMarketPrice)   price=meta.preMarketPrice;
+        if(isPost&&meta.postMarketPrice) price=meta.postMarketPrice;
+        const prev=meta.previousClose||price;
+        console.log('[Yahoo v8 OK] SPX='+price.toFixed(2),'state='+state);
+        return build(price,state,price-prev,prev?(price-prev)/prev*100:0,meta.regularMarketDayHigh||price,meta.regularMarketDayLow||price,meta.regularMarketOpen||price,prev,'Yahoo_v8');
+      }
+    }
+  }catch(e){console.warn('[Yahoo v8 ERR]',e.message);}
+
+  // 4. Stooq
   try{
     const r=await fetch(P+'https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=json',
-      {signal:AbortSignal.timeout(6000)});
+      {signal:AbortSignal.timeout(7000)});
     if(r.ok){
       const row=(await r.json())?.symbols?.[0];
       if(row&&row.close>0){
-        const price=row.close,prev=row.open||price;
-        const state=guessState();
-        console.log('[Stooq] SPX='+price.toFixed(2),'(15min delayed) state='+state);
-        return buildResult(price,state,price-prev,prev?(price-prev)/prev*100:0,
-          row.high||price,row.low||price,row.open||price,prev,'Stooq_15min');
+        const price=row.close,prev=row.open||price,state=guessState();
+        console.log('[Stooq OK] SPX='+price.toFixed(2),'(15min delayed)');
+        return build(price,state,price-prev,prev?(price-prev)/prev*100:0,row.high||price,row.low||price,row.open||price,prev,'Stooq_15min');
       }
     }
-  }catch(e){console.warn('[Stooq]',e.message);}
+  }catch(e){console.warn('[Stooq ERR]',e.message);}
 
-  console.warn('⚠️ جميع المصادر فشلت');
   return null;
 }
 
@@ -2212,7 +2214,7 @@ async function loadMain(){
         rsi:d.rsi, macd:d.macd, msig:d.msig, mhist:d.mhist,
         sk:d.sk, sd:d.sd, bbU:d.bbU, bbL:d.bbL, bbB:d.bbB,
         atr:d.atr, stV:d.stV, stD:d.stD,
-        ema21:d.ema21, ema50:d.ema50, ema200:d.ema200,
+        ema9:d.ema9||0, ema21:d.ema21, ema50:d.ema50, ema200:d.ema200, vwap:d.vwap||0,
         obv:d.obv, obvE:d.obvE, fibH:d.fibH, fibL:d.fibL,
         history: d.history||[],
       });
@@ -2966,107 +2968,166 @@ ${riskNote}`;
 // ─── News & Calendar
 function buildCal(){
   const w=$('cal-wrap'); if(!w) return;
-  const now=new Date();
-  const h=now.getHours(), m=now.getMinutes();
 
-  const items=[
-    {t:'08:30',et:'08:30',f:'🇺🇸',n:'مطالبات البطالة الأسبوعية',fore:'215K',prev:'210K',act:null,imp:2,dir:null},
-    {t:'10:00',et:'10:00',f:'🇺🇸',n:'مبيعات المنازل القائمة',fore:'4.18M',prev:'4.20M',act:null,imp:2,dir:null},
-    {t:'14:30',et:'14:30',f:'🇺🇸',n:'احتياطيات النفط EIA',fore:'-1.2M',prev:'+3.5M',act:null,imp:2,dir:null},
-    {t:'15:30',et:'15:30',f:'🇺🇸',n:'مؤشر أسعار المنتجين PPI',fore:'+0.2%',prev:'+0.4%',act:'+0.3%',imp:3,dir:'neutral'},
-    {t:'16:00',et:'16:00',f:'🇺🇸',n:'ثقة المستهلك',fore:'96.0',prev:'95.2',act:'97.1',imp:2,dir:'up'},
-    {t:'18:00',et:'18:00',f:'🇺🇸',n:'قرار أسعار الفائدة (Fed)',fore:'--',prev:'5.25%',act:null,imp:3,dir:null},
-    {t:'20:30',et:'20:30',f:'🇺🇸',n:'طلبات البطالة الأسبوعية',fore:'215K',prev:'218K',act:null,imp:2,dir:null},
-  ];
+  const isLocal = window.location.protocol==='file:' || window.location.hostname==='localhost';
+  if(isLocal) { buildCalStatic(); return; }
 
-  w.innerHTML=`
-  <div style="font-family:var(--mono);font-size:8px;letter-spacing:3px;color:var(--sub);margin-bottom:10px">
-    التقويم الاقتصادي — بتوقيت نيويورك (ET)
-  </div>
-  ${items.map(ev=>{
-    const [eh,em2]=ev.et.split(':').map(Number);
-    const evMin=eh*60+em2;
-    const nowMin=h*60+m;
-    const isPast=nowMin>evMin;
-    const isComing=evMin>nowMin&&evMin-nowMin<=30;
+  fetch('/api/calendar', {signal:AbortSignal.timeout(8000)})
+    .then(r => r.ok ? r.json() : Promise.reject('HTTP '+r.status))
+    .then(d => {
+      if(d.ok && d.events && d.events.length > 0) {
+        renderCalLive(d.events);
+      } else {
+        buildCalStatic();
+      }
+    })
+    .catch(e => { console.warn('[Cal]', e); buildCalStatic(); });
+}
 
-    return `<div style="
-      display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
-      background:${isComing?'rgba(255,204,0,0.06)':isPast?'var(--bg2)':'var(--bg2)'};
-      border:1px solid ${isComing?'rgba(255,204,0,0.3)':isPast?'var(--dim)':'var(--b1)'};
-      border-radius:8px;margin-bottom:6px;
-      ${isPast?'opacity:0.6':''}
-    ">
-      <!-- Time -->
-      <div style="min-width:44px;text-align:center">
-        <div style="font-family:var(--mono);font-size:11px;font-weight:700;
-          color:${isComing?'var(--gold)':isPast?'var(--sub)':'var(--txt)'}">${ev.t}</div>
-        <div style="font-size:9px;color:var(--sub)">${ev.f}</div>
-      </div>
-
-      <!-- Event -->
+function renderCalLive(events){
+  const w=$('cal-wrap'); if(!w) return;
+  const impMap = {1:'🟢 منخفض', 2:'🟡 متوسط', 3:'🔴 عالي'};
+  const impColor = {1:'#22c55e', 2:'#f59e0b', 3:'#ef4444'};
+  const now = new Date();
+  const rows = events.slice(0,10).map(ev => {
+    const t   = ev.time || '--:--';
+    const imp = ev.impact || 1;
+    const actual = ev.actual != null ? ev.actual : '--';
+    const fore   = ev.estimate || '--';
+    const prev   = ev.prev || '--';
+    const past   = actual !== '--';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:10px;border-bottom:1px solid #111;${past?'opacity:0.6':''}">
+      <span style="font-size:18px">🇺🇸</span>
       <div style="flex:1">
-        <div style="font-size:11px;font-weight:700;color:${isComing?'var(--gold)':'var(--txt)'};margin-bottom:3px">
-          ${isComing?'🔔 ':isPast?'✓ ':''}${ev.n}
-        </div>
-        <div style="display:flex;gap:8px;font-size:10px;flex-wrap:wrap">
-          ${ev.act!=null?`<span style="color:${ev.dir==='up'?'var(--up)':ev.dir==='dn'?'var(--dn)':'var(--gold)'};font-weight:700">فعلي: ${ev.act}</span>`:'<span style="color:var(--sub)">فعلي: قادم</span>'}
-          <span style="color:var(--ice)">توقع: ${ev.fore}</span>
-          <span style="color:var(--sub)">سابق: ${ev.prev}</span>
-        </div>
+        <div style="color:#e0e0ff;font-size:12px;font-weight:600">${ev.event||''}</div>
+        <div style="color:#555;font-size:10px;margin-top:2px">التوقعات: <span style="color:#aaa">${fore}</span> | السابق: <span style="color:#aaa">${prev}</span></div>
       </div>
-
-      <!-- Impact -->
-      <div style="display:flex;flex-direction:column;gap:2px;align-items:center;min-width:28px">
-        ${[1,2,3].map(i=>`<div style="width:6px;height:6px;border-radius:1px;background:${i<=ev.imp?'var(--dn)':'var(--dim)'}"></div>`).join('')}
-        <div style="font-size:8px;color:var(--sub);margin-top:2px">${ev.imp===3?'🔴':ev.imp===2?'🟡':'⚪'}</div>
+      <div style="text-align:center;min-width:60px">
+        <div style="color:#888;font-size:10px">${t}</div>
+        ${past ? `<div style="color:${actual>prev?'#22c55e':'#ef4444'};font-size:12px;font-weight:700">${actual}</div>` : ''}
       </div>
+      <span style="font-size:10px;color:${impColor[imp]||'#888'};min-width:50px;text-align:right">${impMap[imp]||''}</span>
     </div>`;
-  }).join('')}`;
+  }).join('');
+
+  w.innerHTML = `
+    <div style="color:#ffcc00;font-size:11px;margin-bottom:8px">📅 التقويم الاقتصادي اليوم — Finnhub</div>
+    <div style="background:#0d0d1f;border:1px solid #1a1a3a;border-radius:10px;overflow:hidden">
+      ${rows || '<div style="padding:20px;text-align:center;color:#888">لا توجد أحداث اليوم</div>'}
+    </div>`;
+}
+
+function buildCalStatic(){
+  const w=$('cal-wrap'); if(!w) return;
+  const now=new Date(), h=now.getHours(), mn=now.getMinutes();
+  const items=[
+    {t:'08:30',f:'🇺🇸',n:'مطالبات البطالة',fore:'215K',prev:'210K',act:null,imp:2},
+    {t:'10:00',f:'🇺🇸',n:'مبيعات المنازل',fore:'4.18M',prev:'4.20M',act:null,imp:2},
+    {t:'14:30',f:'🇺🇸',n:'احتياطيات النفط EIA',fore:'-1.2M',prev:'+3.5M',act:null,imp:2},
+    {t:'15:30',f:'🇺🇸',n:'مؤشر أسعار المنتجين PPI',fore:'+0.2%',prev:'+0.4%',act:'+0.3%',imp:3},
+    {t:'17:00',f:'🇺🇸',n:'خطاب Fed Powell',fore:'--',prev:'--',act:null,imp:3},
+  ];
+  const impC={1:'#22c55e',2:'#f59e0b',3:'#ef4444'};
+  const impL={1:'🟢 منخفض',2:'🟡 متوسط',3:'🔴 عالي'};
+  const rows=items.map(it=>{
+    const [ih,im]=it.t.split(':').map(Number);
+    const past=h>ih||(h===ih&&mn>im);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid #111;${past?'opacity:0.5':''}">
+      <span style="font-size:18px">${it.f}</span>
+      <div style="flex:1">
+        <div style="color:#e0e0ff;font-size:12px;font-weight:600">${it.n}</div>
+        <div style="color:#555;font-size:10px;margin-top:2px">التوقعات: <span style="color:#aaa">${it.fore}</span> | السابق: <span style="color:#aaa">${it.prev}</span></div>
+      </div>
+      <div style="text-align:center;min-width:55px">
+        <div style="color:#888;font-size:10px">${it.t} ET</div>
+        ${it.act?`<div style="color:${impC[it.imp]};font-size:12px;font-weight:700">${it.act}</div>`:''}
+      </div>
+      <span style="font-size:10px;color:${impC[it.imp]};min-width:55px;text-align:right">${impL[it.imp]}</span>
+    </div>`;
+  }).join('');
+  w.innerHTML=`
+    <div style="color:#f59e0b;font-size:11px;margin-bottom:8px">⚠️ بيانات تجريبية — أضف FINNHUB_KEY للبيانات الحية</div>
+    <div style="background:#0d0d1f;border:1px solid #1a1a3a;border-radius:10px;overflow:hidden">${rows}</div>`;
 }
 function buildNews(){
   const w=$('news-wrap'); if(!w) return;
-  const news=[
-    {t:'الاحتياطي الفيدرالي يُبقي على أسعار الفائدة ويُشير إلى خفضين في 2025',src:'Bloomberg',tm:'منذ 18د',imp:'high',sent:'neutral',c:'var(--gold)',tag:'Fed'},
-    {t:'أرباح Nvidia تتجاوز التوقعات بنسبة 15% — الذكاء الاصطناعي يقود النمو',src:'Reuters',tm:'منذ 45د',imp:'high',sent:'bull',c:'var(--up)',tag:'Tech'},
-    {t:'بيانات التضخم الأمريكي CPI تُفاجئ بانخفاض إلى 3.1%',src:'WSJ',tm:'منذ ساعة',imp:'high',sent:'bull',c:'var(--up)',tag:'Macro'},
-    {t:'تراجع عوائد السندات الأمريكية 10Y — مخاوف الركود تعود للواجهة',src:'FT',tm:'منذ 2ساعة',imp:'med',sent:'bear',c:'var(--dn)',tag:'Bonds'},
-    {t:'أسعار النفط ترتفع 2.3% بعد توترات جيوسياسية في الشرق الأوسط',src:'CNBC',tm:'منذ 3ساعات',imp:'med',sent:'bear',c:'var(--ora)',tag:'Oil'},
-    {t:'بيتكوين يُحافظ على 95,000$ وسط تدفقات ETF قوية',src:'CoinDesk',tm:'منذ 4ساعات',imp:'low',sent:'bull',c:'var(--ice)',tag:'Crypto'},
-    {t:'قطاع التكنولوجيا يقود ارتفاع S&P 500 — Magnificent 7 تتقدم',src:'MarketWatch',tm:'منذ 5ساعات',imp:'med',sent:'bull',c:'var(--up)',tag:'SPX'},
-  ];
+  w.innerHTML='<div style="text-align:center;padding:40px;color:#888">⏳ جاري تحميل الأخبار...</div>';
 
-  const sentColors={'bull':'var(--up)','bear':'var(--dn)','neutral':'var(--gold)'};
-  const sentLabels={'bull':'↑ إيجابي','bear':'↓ سلبي','neutral':'→ محايد'};
-  const impLabels={'high':'🔴 تأثير عالٍ','med':'🟡 متوسط','low':'⚪ منخفض'};
+  const isLocal = window.location.protocol==='file:' || window.location.hostname==='localhost';
+  const apiURL  = isLocal ? null : '/api/news';
+
+  if(!apiURL) { renderNewsStatic(); return; }
+
+  fetch(apiURL, {signal:AbortSignal.timeout(10000)})
+    .then(r => r.ok ? r.json() : Promise.reject('HTTP '+r.status))
+    .then(d => {
+      if(!d.news || d.news.length === 0) { renderNewsStatic(); return; }
+      renderNewsLive(d.news);
+    })
+    .catch(e => {
+      console.warn('[News] fetch failed:', e);
+      renderNewsStatic();
+    });
+}
+
+function renderNewsLive(news){
+  const w=$('news-wrap'); if(!w) return;
+
+  function timeAgo(ts){
+    if(!ts) return '';
+    const diff=Math.floor((Date.now()-ts)/60000);
+    if(diff<1)    return 'الآن';
+    if(diff<60)   return 'منذ '+diff+'د';
+    if(diff<1440) return 'منذ '+Math.floor(diff/60)+'س';
+    return 'منذ '+Math.floor(diff/1440)+'ي';
+  }
+
+  function impLevel(title){
+    if(/فيدرالي|Fed|فائدة|CPI|تضخم|NFP|GDP|ناتج|ركود|أزمة/i.test(title)) return {label:'🔴 عالي التأثير',color:'#ef4444',bg:'rgba(239,68,68,0.08)'};
+    if(/أرباح|مبيعات|إنتاج|بيانات|مؤشر|نفط|ذهب|دولار/i.test(title))      return {label:'🟡 متوسط',color:'#f59e0b',bg:'rgba(245,158,11,0.08)'};
+    return {label:'🟢 منخفض',color:'#22c55e',bg:'rgba(34,197,94,0.06)'};
+  }
+
+  function newsCard(n){
+    const imp=impLevel(n.title);
+    const href=n.link?`href="${n.link}" target="_blank" rel="noopener"`:'';
+    return `<a ${href} style="display:block;text-decoration:none;background:#0d0d1f;border:1px solid #1a1a3a;border-radius:12px;padding:13px 15px;margin-bottom:8px;border-right:3px solid ${imp.color};transition:all 0.2s" onmouseover="this.style.background='#111128'" onmouseout="this.style.background='#0d0d1f'">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px;gap:6px">
+        <span style="font-size:10px;font-weight:700;color:#fff;background:#1a1a3a;padding:2px 9px;border-radius:20px;white-space:nowrap">${n.src}</span>
+        <span style="font-size:10px;color:${imp.color};background:${imp.bg};padding:2px 8px;border-radius:20px;white-space:nowrap">${imp.label}</span>
+        <span style="font-size:10px;color:#444;margin-right:auto;white-space:nowrap">${timeAgo(n.ts)}</span>
+      </div>
+      <div style="color:#dde0ff;font-size:13px;font-weight:600;line-height:1.5;margin-bottom:${n.desc?'5px':'0'}">${n.title}</div>
+      ${n.desc?`<div style="color:#556;font-size:11px;line-height:1.4;margin-top:4px">${n.desc}</div>`:''}
+    </a>`;
+  }
+
+  const srcs=[...new Set(news.map(n=>n.src))];
+  const badges=srcs.map(s=>`<span style="background:#111;border:1px solid #2a2a4a;border-radius:20px;padding:2px 10px;font-size:10px;color:#aaa">${s}</span>`).join('');
 
   w.innerHTML=`
-  <div style="font-family:var(--mono);font-size:8px;letter-spacing:3px;color:var(--sub);margin-bottom:10px">
-    آخر الأخبار الاقتصادية
-  </div>
-  ${news.map((n,i)=>`
-  <div style="
-    display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
-    background:var(--bg2);border:1px solid var(--b1);border-radius:8px;margin-bottom:6px;
-    border-right:3px solid ${n.c};
-    transition:border-color 0.2s;
-  " onmouseenter="this.style.borderColor='${n.c}'" onmouseleave="this.style.borderLeftColor='var(--b1)'">
-    <div style="min-width:36px;text-align:center;padding-top:2px">
-      <div style="font-size:9px;font-family:var(--mono);background:${n.c}22;color:${n.c};
-        border-radius:3px;padding:2px 4px;font-weight:700">${n.tag}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:12px">
+      <span style="color:#ffcc00;font-size:11px;font-weight:700;margin-left:4px">📡 مصادر عربية حية:</span>
+      ${badges}
+      <button onclick="buildNews()" style="margin-right:auto;background:none;border:1px solid #333;border-radius:20px;color:#888;font-size:10px;padding:2px 10px;cursor:pointer">🔄 تحديث</button>
+      <span style="color:#444;font-size:10px">${new Date().toLocaleTimeString('ar-SA')}</span>
     </div>
-    <div style="flex:1">
-      <div style="font-size:11px;font-weight:700;color:var(--txt);line-height:1.5;margin-bottom:4px">
-        ${n.t}
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:9px;font-family:var(--mono);color:var(--gold);font-weight:700">${n.src}</span>
-        <span style="font-size:9px;color:var(--sub)">${n.tm}</span>
-        <span style="font-size:9px;color:${sentColors[n.sent]};font-weight:700">${sentLabels[n.sent]}</span>
-        <span style="font-size:9px;color:var(--sub)">${impLabels[n.imp]}</span>
-      </div>
+    <div style="color:#ffcc00;font-size:12px;font-weight:700;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid #1a1a3a">
+      🌙 أخبار اقتصادية عربية (${news.length})
     </div>
-  </div>`).join('')}`;
+    ${news.map(newsCard).join('')}
+    ${news.length===0?'<div style="text-align:center;padding:30px;color:#555">لا توجد أخبار متاحة حالياً</div>':''}
+  `;
+}
+
+function renderNewsStatic(){
+  const w=$('news-wrap'); if(!w) return;
+  w.innerHTML=`<div style="text-align:center;padding:30px;color:#888">
+    <div style="font-size:32px;margin-bottom:12px">📰</div>
+    <div style="color:#fff;margin-bottom:8px">الأخبار غير متاحة حالياً</div>
+    <div style="font-size:12px">تأكد من تشغيل السيرفر على Render</div>
+    <button onclick="buildNews()" style="margin-top:12px;background:#5a6eff;color:#fff;border:none;border-radius:8px;padding:8px 20px;cursor:pointer">🔄 إعادة المحاولة</button>
+  </div>`;
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4561,16 +4622,49 @@ setTimeout(initChart,800);
   const i1=document.getElementById('inp-finnhub');
   const i2=document.getElementById('inp-av');
   if(i1)i1.value=fk; if(i2)i2.value=ak;
+  // إرسال المفاتيح للسيرفر تلقائياً عند كل تحميل للصفحة
+  if(fk||ak){
+    const isLocal=window.location.protocol==='file:'||window.location.hostname==='localhost';
+    if(!isLocal){
+      setTimeout(async()=>{
+        try{
+          await fetch('/api/keys',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({finnhub:fk,alphavantage:ak})
+          });
+          console.log('[API Keys] Auto-sent to server on load');
+        }catch(e){console.warn('[API Keys] Auto-send failed:',e.message);}
+      }, 2000); // بعد ثانيتين من التحميل
+    }
+  }
 })();
 
-function saveApiKeys(){
+async function saveApiKeys(){
   const fk=(document.getElementById('inp-finnhub')||{value:''}).value.trim();
   const ak=(document.getElementById('inp-av')||{value:''}).value.trim();
   localStorage.setItem('nexus_finnhub',fk);
   localStorage.setItem('nexus_av',ak);
   window._FINNHUB_KEY=fk; window._AV_KEY=ak;
+
+  // ── إرسال المفاتيح للسيرفر (Render) ليستخدمها في الجلب من الخادم
+  const isLocal = window.location.protocol==='file:' || window.location.hostname==='localhost';
+  if(!isLocal && (fk || ak)) {
+    try {
+      const r = await fetch('/api/keys', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({finnhub:fk, alphavantage:ak})
+      });
+      const d = await r.json();
+      console.log('[API Keys] Server updated:', d);
+    } catch(e){ console.warn('[API Keys] Failed to send to server:', e.message); }
+  }
+
   const p=$('api-keys-panel'); if(p)p.style.display='none';
   const o=$('api-keys-overlay'); if(o)o.style.display='none';
+
+  // إعادة التحميل فوراً بالمفاتيح الجديدة
   loadMain();
 }
 
@@ -4581,6 +4675,32 @@ function openApiKeys(){
   if(i2)i2.value=window._AV_KEY||localStorage.getItem('nexus_av')||'';
   const p=$('api-keys-panel'); if(p)p.style.display='block';
   const o=$('api-keys-overlay'); if(o)o.style.display='block';
+  // فحص حالة المفاتيح في السيرفر
+  checkServerKeysStatus();
+}
+
+async function checkServerKeysStatus(){
+  const sfEl=$('skf'), saEl=$('ska');
+  if(!sfEl) return;
+  const isLocal=window.location.protocol==='file:'||window.location.hostname==='localhost';
+  if(isLocal){
+    if(sfEl) sfEl.innerHTML='Finnhub: 🖥️ محلي — لا سيرفر';
+    if(saEl) saEl.innerHTML='Alpha Vantage: 🖥️ محلي — لا سيرفر';
+    return;
+  }
+  try{
+    const r=await fetch('/api/keys/status');
+    const d=await r.json();
+    if(sfEl) sfEl.innerHTML='Finnhub: '+(d.hasFinnhub
+      ? '<span style="color:#22c55e">✅ مفعّل في السيرفر</span>'
+      : '<span style="color:#ef4444">❌ غير مفعّل — اضغط "حفظ وإرسال"</span>');
+    if(saEl) saEl.innerHTML='Alpha Vantage: '+(d.hasAV
+      ? '<span style="color:#22c55e">✅ مفعّل في السيرفر</span>'
+      : '<span style="color:#ef4444">❌ غير مفعّل — اضغط "حفظ وإرسال"</span>');
+  }catch(e){
+    if(sfEl) sfEl.innerHTML='Finnhub: <span style="color:#f59e0b">⚠️ تعذّر الاتصال بالسيرفر</span>';
+    if(saEl) saEl.innerHTML='Alpha Vantage: <span style="color:#f59e0b">⚠️ تعذّر الاتصال بالسيرفر</span>';
+  }
 }
 </script>
 
@@ -4604,23 +4724,133 @@ function openApiKeys(){
       value="">
   </div>
 
-  <div style="background:#111;border-radius:8px;padding:10px;margin-bottom:16px;font-size:11px;color:#888">
-    <div style="color:#ffcc00;margin-bottom:6px">📡 ترتيب أولوية المصادر:</div>
-    <div>1️⃣ Yahoo Finance v7 — Pre/After مباشرة</div>
-    <div>2️⃣ Yahoo Finance v8 — سعر حي من meta</div>
-    <div>3️⃣ Finnhub — يحتاج API Key</div>
-    <div>4️⃣ Alpha Vantage — يحتاج API Key</div>
-    <div>5️⃣ Stooq — مجاني، 15د مؤخر (last resort)</div>
+  <div style="background:#111;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11px;color:#888">
+    <div style="color:#ffcc00;margin-bottom:6px">📡 ترتيب الأولوية (Pre/After-Hours):</div>
+    <div>1️⃣ <b style="color:#22c55e">Finnhub</b> — الأفضل للـ Pre/After (رمز: SPX)</div>
+    <div>2️⃣ Yahoo Finance v7 — Pre/After مدعوم</div>
+    <div>3️⃣ Yahoo Finance v8 — سعر حي من meta</div>
+    <div>4️⃣ Alpha Vantage — SPY كبديل</div>
+    <div>5️⃣ Stooq — مجاني، 15د مؤخر</div>
+  </div>
+  <div id="server-keys-status" style="background:#0a1a0a;border:1px solid #1a3a1a;border-radius:8px;padding:10px;margin-bottom:12px;font-size:11px">
+    <div style="color:#ffcc00;margin-bottom:6px">🖥️ حالة مفاتيح السيرفر (Render):</div>
+    <div id="skf" style="color:#888">Finnhub: ⏳ جاري التحقق...</div>
+    <div id="ska" style="color:#888">Alpha Vantage: ⏳ جاري التحقق...</div>
+    <div style="color:#555;margin-top:4px;font-size:10px">⚠️ المفاتيح في الداشبورد فقط = تعمل في المتصفح فقط<br>اضغط "حفظ وإرسال للسيرفر" لتفعيلها في Render أيضاً</div>
   </div>
 
   <div style="display:flex;gap:8px">
-    <button onclick="saveApiKeys()" style="flex:1;background:#5a6eff;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">💾 حفظ</button>
+    <button onclick="saveApiKeys()" style="flex:1;background:#5a6eff;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer;font-weight:700">💾 حفظ وإرسال للسيرفر</button>
     <button onclick="$('api-keys-panel').style.display='none'" style="flex:1;background:#333;color:#fff;border:none;border-radius:8px;padding:10px;cursor:pointer">إغلاق</button>
   </div>
 </div>
 <div id="api-keys-overlay" style="display:none;position:fixed;inset:0;background:#0008;z-index:9998" onclick="$('api-keys-panel').style.display='none';this.style.display='none'"></div>
 
 
+
+
+<!-- ══ PWA Registration ══ -->
+<script>
+// ── تسجيل Service Worker
+if('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => console.log('[PWA] SW registered:', reg.scope))
+      .catch(err => console.warn('[PWA] SW failed:', err));
+  });
+}
+
+// ── زر "تثبيت التطبيق" (Android Chrome)
+let _deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  _deferredPrompt = e;
+  // أظهر زر التثبيت
+  const btn = document.getElementById('pwa-install-btn');
+  if(btn) btn.style.display = 'flex';
+});
+
+function installPWA() {
+  if(!_deferredPrompt) return;
+  _deferredPrompt.prompt();
+  _deferredPrompt.userChoice.then(choice => {
+    console.log('[PWA] Install:', choice.outcome);
+    _deferredPrompt = null;
+    const btn = document.getElementById('pwa-install-btn');
+    if(btn) btn.style.display = 'none';
+  });
+}
+
+// ── كشف iOS Safari
+function isIOS() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+}
+function isInStandaloneMode() {
+  return ('standalone' in window.navigator) && window.navigator.standalone;
+}
+
+// ── إظهار تعليمات iOS عند أول زيارة
+window.addEventListener('load', () => {
+  if(isIOS() && !isInStandaloneMode() && !localStorage.getItem('pwa_ios_shown')) {
+    setTimeout(() => {
+      const banner = document.getElementById('ios-install-banner');
+      if(banner) {
+        banner.style.display = 'flex';
+        localStorage.setItem('pwa_ios_shown', '1');
+      }
+    }, 3000);
+  }
+});
+</script>
+
+
+<!-- ══ PWA Install UI ══ -->
+
+<!-- زر التثبيت — Android Chrome -->
+<button id="pwa-install-btn" onclick="installPWA()" style="
+  display:none; position:fixed; bottom:80px; left:50%; transform:translateX(-50%);
+  align-items:center; gap:10px; z-index:9990;
+  background:linear-gradient(135deg,#5a6eff,#bb66ff);
+  color:#fff; border:none; border-radius:50px; padding:14px 28px;
+  font-size:15px; font-weight:700; cursor:pointer; box-shadow:0 8px 30px #5a6eff55;
+  font-family:inherit; white-space:nowrap;
+">
+  📲 تثبيت التطبيق
+</button>
+
+<!-- بانر تعليمات iOS Safari -->
+<div id="ios-install-banner" style="
+  display:none; position:fixed; bottom:0; left:0; right:0; z-index:9991;
+  background:linear-gradient(135deg,#0a0a2e,#111133);
+  border-top:2px solid #5a6eff55; padding:16px 20px 30px;
+  flex-direction:column; align-items:center; gap:8px;
+  font-family:inherit;
+">
+  <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+    <div style="color:#ffcc00;font-weight:700;font-size:15px">📲 تثبيت NEXUS v7</div>
+    <button onclick="document.getElementById('ios-install-banner').style.display='none'"
+      style="background:none;border:none;color:#888;font-size:20px;cursor:pointer">✕</button>
+  </div>
+  <div style="color:#ccc;font-size:13px;text-align:center">
+    لتثبيت التطبيق على الآيفون:
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;color:#fff;font-size:13px">
+    <div style="background:#1a1a3a;border-radius:10px;padding:10px 14px;text-align:center">
+      <div style="font-size:22px">⬆️</div>
+      <div>اضغط Share</div>
+    </div>
+    <div style="color:#5a6eff;font-size:20px">←</div>
+    <div style="background:#1a1a3a;border-radius:10px;padding:10px 14px;text-align:center">
+      <div style="font-size:22px">➕</div>
+      <div>Add to Home</div>
+    </div>
+    <div style="color:#5a6eff;font-size:20px">←</div>
+    <div style="background:#1a1a3a;border-radius:10px;padding:10px 14px;text-align:center">
+      <div style="font-size:22px">✅</div>
+      <div>Add</div>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
