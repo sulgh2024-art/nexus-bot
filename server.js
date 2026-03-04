@@ -401,7 +401,7 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
   const isL = d === 1;
   const score = isL ? bScore : sScore;
 
-  // ══ أهداف SPX إنترادي ══
+  // ══ أهداف SPX ══
   const slPts=8, tp1Pts=10, tp2Pts=20, tp3Pts=35;
   const tp1 = Math.round((p + d*tp1Pts)*100)/100;
   const tp2 = Math.round((p + d*tp2Pts)*100)/100;
@@ -415,66 +415,95 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
     slWarned:false, openedAt:new Date()
   });
 
-  // ══ تاريخ انتهاء SPXW ══
-  const now = new Date();
-  const etH = ((now.getUTCHours()-4+24)%24) + now.getUTCMinutes()/60;
+  // ══ وقت الجلسة ══
+  const etH = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
   const hoursLeft = Math.max(16.0 - etH, 0.1);
-  const sessionNote = hoursLeft<1 ? '⚠️ آخر ساعة — خطر عالٍ'
-                    : hoursLeft<2 ? '⚠️ آخر ساعتين'
-                    : hoursLeft<4 ? 'منتصف الجلسة'
-                    : 'بداية الجلسة';
+  const sessionIcon = hoursLeft<1?'🔴':hoursLeft<2?'🟡':'🟢';
+  const sessionNote = hoursLeft<1?'آخر ساعة ⚠️':hoursLeft<2?'آخر ساعتين':hoursLeft<4?'منتصف الجلسة':'بداية الجلسة';
 
-  // تاريخ انتهاء الأوبشن
-  const expDate = now.toLocaleDateString('en-US',{
+  // تاريخ انتهاء SPXW
+  const expDate = new Date().toLocaleDateString('en-US',{
     timeZone:'America/New_York', month:'short', day:'2-digit', year:'2-digit'
-  }).replace(',','');
+  }).replace(', ',' \'');
 
-  // ══ سترايك ATM و OTM ══
-  const atmStrike = Math.round(p/5)*5;
-  // نطاق سترايك: ATM إلى ATM+15 (CALL) أو ATM-15 (PUT)
-  const strikeNear = atmStrike;
-  const strikeFar  = isL ? atmStrike+15 : atmStrike-15;
+  // ══ حساب السترايك الأمثل بـ Black-Scholes (IV=9% واقعي) ══
+  function bsOpt(S,K,T,sig,opt){
+    if(T<=0) return Math.max(opt==='c'?S-K:K-S, 0);
+    const sqt=Math.sqrt(T);
+    const d1=(Math.log(S/K)+(0.053+0.5*sig*sig)*T)/(sig*sqt);
+    const d2=d1-sig*sqt;
+    const N=x=>{
+      const p=[0.319381530,-0.356563782,1.781477937,-1.821255978,1.330274429];
+      const t=1/(1+0.2316419*Math.abs(x));
+      let poly=0, tp=t;
+      for(const c of p){poly+=c*tp;tp*=t;}
+      const nd=Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);
+      return x>=0?1-nd*poly:nd*poly;
+    };
+    if(opt==='c') return Math.max(S*N(d1)-K*Math.exp(-0.053*T)*N(d2), 0);
+    return Math.max(K*Math.exp(-0.053*T)*(1-N(d2))-S*(1-N(d1)), 0);
+  }
 
-  // ══ ملخص المؤشرات ══
+  // ابحث عن السترايك الذي يعطي premium أقرب لـ $6.50
+  const T   = hoursLeft/(252*6.5);
+  const sig = 0.09; // IV واقعي لـ SPX
+  const TARGET_PREM = 6.50;
+  let bestStrike = Math.round(p/5)*5;
+  let bestDiff   = 9999;
+  let bestPrem   = 0;
+  for(let diff=0; diff<=80; diff+=5){
+    const K = Math.round(p/5)*5 + (isL ? diff : -diff);
+    const prem = bsOpt(p, K, T, sig, isL?'c':'p');
+    if(Math.abs(prem - TARGET_PREM) < bestDiff){
+      bestDiff   = Math.abs(prem - TARGET_PREM);
+      bestStrike = K;
+      bestPrem   = prem;
+    }
+  }
+  const premVal  = Math.round(bestPrem*100)/100;
+  const costVal  = Math.round(premVal*100);
+  const slPrem   = Math.round(premVal*0.50*100)/100;  // وقف -50%
+  const slCost   = Math.round(slPrem*100);
+  const tgtPrem  = Math.round(premVal*1.80*100)/100;  // هدف +80%
+  const tgtCost  = Math.round(tgtPrem*100);
+  const otmDist  = Math.abs(bestStrike - Math.round(p/5)*5);
+
+  // ══ المؤشرات ══
   const rsiV  = S.rsi.toFixed(1);
   const macdV = S.mhist>0?'▲':'▼';
   const stV   = S.stD===1?'▲':'▼';
-  const trend = isL?'صاعط':'هابط';
-  const vwapLine = S.vwap>0 ? `\n📊 VWAP: <b>${fmt(S.vwap)}</b>` : '';
+  const vwapLine = S.vwap>0?`\n📊 VWAP: <b>${fmt(S.vwap)}</b>`:'';
 
   await tg(
-`${isL?'🚀':'🔻'} <b>NEXUS v7 — دخول ${isL?'CALL شراء':'PUT بيع'}</b>
-
-📊 <b>S&P 500 · SPX</b>
-💰 الدخول: <b>${fmt(p)}</b>${vwapLine}
-📐 RSI:${rsiV} · MACD:${macdV} · ST:${stV} · ${trend} · ${S.mktState}
-✅ قوة الإشارة: <b>${score}/15</b> | ${sessionNote}
+`${isL?'🚀':'🔻'} <b>NEXUS v7 — ${isL?'CALL شراء':'PUT بيع'}</b>
+${sessionIcon} ${sessionNote}  |  ATR: <b>${atr.toFixed(0)}</b> نقطة
 
 ━━━━━━━━━━━━━━━━━━
-${isL?'📈':'📉'} <b>SPXW ${isL?'CALL':'PUT'} | 0DTE | ${expDate}</b>
+📊 <b>SPX</b>  💰 <b>${fmt(p)}</b>${vwapLine}
+📐 RSI:<b>${rsiV}</b>  MACD:<b>${macdV}</b>  ST:<b>${stV}</b>  ${S.mktState}
+✅ قوة الإشارة: <b>${score}/15</b>
 
-🎯 نطاق السترايك: <b>${Math.min(strikeNear,strikeFar)}–${Math.max(strikeNear,strikeFar)}</b>
-💡 ابحث في دراية عن premium <b>$5–8</b>/سهم (~$500–800/عقد)
-   • أقل من $5 → OTM بعيد، خطر عالٍ ⚠️
-   • أكثر من $10 → ATM، تكلفة أعلى
+━━━━━━━━━━━━━━━━━━
+${isL?'📈':'📉'} <b>SPXW ${isL?'CALL':'PUT'} ${bestStrike}</b>  |  0DTE  |  ${expDate}
+💵 Premium: <b>$${premVal}</b>/سهم  (~<b>$${costVal}</b>/عقد)
+   ${otmDist===0?'📍 ATM (في السعر)':'📍 OTM '+otmDist+' نقطة من السعر'}
 
-💰 <b>إدارة الأوبشن:</b>
-🛑 وقف الخسارة: إذا نزل Premium <b>-50%</b> → اخرج فوراً
-🎯 هدف الربح: إذا وصل Premium <b>+80%</b> → احجز الربح
-📌 مثال: دخلت بـ $6.50 → وقف عند $3.25 | هدف $11.70
+🛑 اخرج إذا نزل Premium → <b>$${slPrem}</b>  (-50% = -$${costVal-slCost})
+🎯 اخرج إذا وصل Premium → <b>$${tgtPrem}</b>  (+80% = +$${tgtCost-costVal})
 
 ━━━━━━━━━━━━━━━━━━
 🎯 <b>أهداف SPX:</b>
-├ TP1: <b>${fmt(tp1)}</b>  (+${tp1Pts} نقطة | ${fmtP((tp1-p)/p*100)})
-├ TP2: <b>${fmt(tp2)}</b>  (+${tp2Pts} نقطة | ${fmtP((tp2-p)/p*100)})
-└ TP3: <b>${fmt(tp3)}</b>  (+${tp3Pts} نقطة | ${fmtP((tp3-p)/p*100)})
+├ TP1  <b>${fmt(tp1)}</b>  ${fmtP((tp1-p)/p*100)}  (+${tp1Pts} نقطة)
+├ TP2  <b>${fmt(tp2)}</b>  ${fmtP((tp2-p)/p*100)}  (+${tp2Pts} نقطة)
+└ TP3  <b>${fmt(tp3)}</b>  ${fmtP((tp3-p)/p*100)}  (+${tp3Pts} نقطة)
 
-🛑 وقف SPX: <b>${fmt(sl)}</b>  (-${slPts} نقطة | ${fmtP((sl-p)/p*100)})
+🛑 وقف SPX: <b>${fmt(sl)}</b>  ${fmtP((sl-p)/p*100)}  (-${slPts} نقطة)
 📏 R:R = 1:${rr}
+━━━━━━━━━━━━━━━━━━
 ⏰ ${nowAr()}
 ⚠️ <i>ليست نصيحة مالية</i>`);
 
-  log(`📤 ${type} SPXW ${isL?'CALL':'PUT'} ${strikeNear}-${strikeFar} SPX:${fmt(p)} TP1:${fmt(tp1)} TP2:${fmt(tp2)} SL:${fmt(sl)}`);
+  log(`📤 ${type} SPXW ${bestStrike} ${isL?'CALL':'PUT'} prem:$${premVal} cost:$${costVal} TP1:${fmt(tp1)} SL:${fmt(sl)}`);
 }
 
 async function alertSLBroken(){
