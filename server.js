@@ -395,17 +395,12 @@ const mktLn=()=>{
 // ══════════════════════════════════════════════════════════════════
 async function alertEntry(type,bScore,sScore,bLabels,sLabels){
   const p    = S.price;
-  const atr  = Math.max(S.atr||40, 25);
+  const atr  = Math.max(S.atr||40, 20);
   const d    = type==='BUY' ? 1 : -1;
   const isL  = d === 1;
   const score= isL ? bScore : sScore;
-  const labels= isL ? bLabels : sLabels;
 
-  // ══ أهداف إنترادي واقعية ══
-  // SL  = 8 نقاط
-  // TP1 = 10 نقاط
-  // TP2 = 20 نقاط
-  // TP3 = 35 نقاط
+  // ══ أهداف SPX إنترادي ══
   const slPts=8, tp1Pts=10, tp2Pts=20, tp3Pts=35;
   const tp1 = Math.round((p + d*tp1Pts)*100)/100;
   const tp2 = Math.round((p + d*tp2Pts)*100)/100;
@@ -419,44 +414,98 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
     slWarned:false,openedAt:new Date()
   });
 
-  // ══ SPY Options — ميزانية ≤ $350 ══
-  const spyPrice  = p / 10;
-  const spyStrike = isL
-    ? (Math.ceil(spyPrice/0.5)*0.5).toFixed(1)
-    : (Math.floor(spyPrice/0.5)*0.5).toFixed(1);
-  const premMin = 2.50, premMax = 3.50;
-  const tgtPrem = (premMin*1.8).toFixed(2);
-  const slPrem  = (premMin*0.40).toFixed(2);
+  // ══ فلترة السترايكات — Black-Scholes مبسط ══
+  // نموذج: sigma_daily = ATR/price
+  // t = 0.5 يوم تداول (نصف جلسة تقريباً)
+  // نبحث عن أول سترايك premium بين $2.50–$3.50
+  function bsOption(S,K,t,sigma){
+    if(t<=0) return isL?Math.max(0,S-K):Math.max(0,K-S);
+    const d1=(Math.log(S/K)+(0.5*sigma*sigma)*t)/(sigma*Math.sqrt(t));
+    const d2=d1-sigma*Math.sqrt(t);
+    // تقريب دالة التوزيع الطبيعي
+    function N(x){
+      const a=[0.319381530,-0.356563782,1.781477937,-1.821255978,1.330274429];
+      const k=1/(1+0.2316419*Math.abs(x));
+      let poly=k*(a[0]+k*(a[1]+k*(a[2]+k*(a[3]+k*a[4]))));
+      const pdf=Math.exp(-0.5*x*x)/Math.sqrt(2*Math.PI);
+      return x>=0 ? 1-pdf*poly : pdf*poly;
+    }
+    if(isL) return S*N(d1)-K*Math.exp(-0.05*t)*N(d2);
+    else    return K*Math.exp(-0.05*t)*N(-d2)-S*N(-d1);
+  }
 
-  // ══ ملخص المؤشرات بنفس أسلوب الصورة ══
-  const rsi  = S.rsi.toFixed(1);
-  const macd = S.mhist>0?'▲':'▼';
-  const st   = S.stD===1?'▲':'▼';
-  const trend= isL?'صاعط':'هابط';
+  const sigmaDaily = atr/p;
+  const sigmaAnnual= sigmaDaily*Math.sqrt(252);
+  // وقت متبقي (نفترض منتصف الجلسة = 0.5 يوم)
+  const now=new Date();
+  const etH=((now.getUTCHours()-4+24)%24)+now.getUTCMinutes()/60;
+  const remainHours=Math.max(16-etH,0.5);
+  const t=remainHours/(6.5*252); // 6.5 ساعة تداول يومياً
+
+  // ── ابحث عن أقرب سترايك بـ premium $2.50-$3.50
+  let bestStrike=null, bestPrem=null;
+  const maxBudget=3.50, minBudget=2.00;
+
+  for(let offset=5; offset<=100; offset+=5){
+    const K = isL ? Math.round((p+offset)/5)*5 : Math.round((p-offset)/5)*5;
+    const prem = bsOption(p,K,t,sigmaAnnual);
+    if(prem<=maxBudget){
+      bestStrike=K;
+      bestPrem=prem;
+      break;
+    }
+  }
+
+  // fallback: أخذ OTM+35 إذا لم يجد
+  if(!bestStrike){
+    bestStrike = isL ? Math.round((p+35)/5)*5 : Math.round((p-35)/5)*5;
+    bestPrem   = bsOption(p,bestStrike,t,sigmaAnnual);
+  }
+
+  const premFormatted = bestPrem.toFixed(2);
+  const contractCost  = Math.round(bestPrem*100);
+  const slPremVal     = (bestPrem*0.50).toFixed(2);  // وقف -50%
+  const slContractVal = Math.round(bestPrem*0.50*100); // بالدولار
+  const tgtPremVal    = (bestPrem*1.80).toFixed(2);  // هدف +80%
+  const tgtContractVal= Math.round(bestPrem*1.80*100);
+  const otmDist       = Math.abs(bestStrike-p).toFixed(0);
+
+  // ══ ملخص المؤشرات ══
+  const rsiV  = S.rsi.toFixed(1);
+  const macdV = S.mhist>0?'▲':'▼';
+  const stV   = S.stD===1?'▲':'▼';
+  const trend = isL?'صاعط':'هابط';
 
   await tg(
-`${isL?'🚀':'🔻'} <b>NEXUS v7 — دخول ${isL?'شراء CALL':'بيع PUT'}</b>
+`${isL?'🚀':'🔻'} <b>NEXUS v7 — دخول ${isL?'CALL شراء':'PUT بيع'}</b>
 
 📊 <b>S&P 500 · SPX</b>
 💰 الدخول: <b>${fmt(p)}</b>
-📐 RSI:${rsi} · MACD:${macd} · ST:${st} · ${trend} · ${S.mktState}
+📐 RSI:${rsiV} · MACD:${macdV} · ST:${stV} · ${trend} · ${S.mktState}
 ✅ قوة الإشارة: <b>${score}/15</b>
 
-${isL?'📈':'📉'} <b>الأوبشن المقترح:</b>
-📌 SPY ${isL?'CALL':'PUT'} | سترايك: <b>${spyStrike}</b> | 0DTE
-💵 السعر: <b>$${premMin}–$${premMax}</b>/سهم (~$${Math.round(premMax*100)}/عقد)
+📊 <b>الأوبشن المقترح:</b>
+📌 SPX ${isL?'CALL':'PUT'} | سترايك: <b>${bestStrike}</b> | 0DTE
+📏 المسافة من السعر: <b>${otmDist} نقطة OTM</b>
+💵 السعر: <b>$${premFormatted}</b>/سهم
+💰 إجمالي العقد: <b>~$${contractCost}</b>
 
-🎯 <b>الأهداف:</b>
-├ TP1: <b>${fmt(tp1)}</b> (${fmtP((tp1-p)/p*100)})
-├ TP2: <b>${fmt(tp2)}</b> (${fmtP((tp2-p)/p*100)})
-└ TP3: <b>${fmt(tp3)}</b> (${fmtP((tp3-p)/p*100)})
+🛑 <b>وقف خسارة الأوبشن:</b>
+   إذا نزل Premium لـ <b>$${slPremVal}</b> → اخرج (خسارة ~$${slContractVal})
+🎯 <b>هدف الأوبشن:</b>
+   إذا وصل Premium لـ <b>$${tgtPremVal}</b> → اخرج (ربح ~$${tgtContractVal})
 
-🛑 وقف: <b>${fmt(sl)}</b> (${fmtP((sl-p)/p*100)})
+🎯 <b>أهداف SPX:</b>
+├ TP1: <b>${fmt(tp1)}</b> (${fmtP((tp1-p)/p*100)} | ${tp1Pts} نقطة)
+├ TP2: <b>${fmt(tp2)}</b> (${fmtP((tp2-p)/p*100)} | ${tp2Pts} نقطة)
+└ TP3: <b>${fmt(tp3)}</b> (${fmtP((tp3-p)/p*100)} | ${tp3Pts} نقطة)
+
+🛑 وقف SPX: <b>${fmt(sl)}</b> (${fmtP((sl-p)/p*100)} | ${slPts} نقاط)
 📏 R:R = 1:${rr}
 ⏰ ${nowAr()}
 ⚠️ <i>ليست نصيحة مالية</i>`);
 
-  log(`📤 ${type} ${isL?'CALL':'PUT'} @${fmt(p)} TP1:${fmt(tp1)} SL:${fmt(sl)}`);
+  log(`📤 ${type} ${isL?'CALL':'PUT'} SPX@${bestStrike} prem:$${premFormatted} cost:$${contractCost} entry:${fmt(p)} SL:${fmt(sl)}`);
 }
 
 async function alertSLBroken(){
