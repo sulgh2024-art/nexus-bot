@@ -331,46 +331,82 @@ async function loadMarketData(){
 // ══════════════════════════════════════════════════════════════════
 function computeSig(){
   const p=S.price;
-  if(!p||p===0) return {isBuy:false,isSell:false,bs:0,ss:0,bScore:0,sScore:0,
-    bPct:0,sPct:0,bLabels:[],sLabels:[],conviction:0,bc:[],sc:[]};
+  if(!p||p===0) return {isBuy:false,isSell:false,bs:0,ss:0,
+    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],bc:[],sc:[],conviction:0};
 
-  const atr=S.atr||20;
-  const vwap=S.vwap||p;
-  const bbRange=(S.bbU-S.bbL)||atr*2;
-  const bbPct=bbRange>0?(p-S.bbL)/bbRange:0.5;
+  // ══ الوقت — تجنب أول 15 دقيقة وآخر 30 دقيقة ══
+  const etH = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
+  const tooEarly = etH < 9.75;   // قبل 9:45 AM ET
+  const tooLate  = etH > 15.5;   // بعد 3:30 PM ET
+  const badTime  = tooEarly || tooLate;
+
+  // ══ فلتر السوق الهادئ ══
+  const bbRange = (S.bbU - S.bbL) || 1;
+  const bbWidth = bbRange / p;         // نسبة عرض BB
+  const sideways = bbWidth < 0.004;    // أقل من 0.4% → سوق جانبي
+
+  // ══ فلتر ATR منخفض ══
+  const lowATR = S.atr < 15;           // سوق خامل جداً
+
+  // ══ شروط الشراء CALL (20 نقطة) ══
+  const bbPct = bbRange>0 ? (p-S.bbL)/bbRange : 0.5;
+  const vwap  = S.vwap || p;
 
   const bc=[
-    {pass:S.stD===1,         w:3, label:'SuperTrend ↑'},
-    {pass:vwap>0&&p>vwap*1.0005, w:3, label:'فوق VWAP'},
-    {pass:S.ema9>0&&S.ema9>S.ema21, w:2, label:'EMA9 > EMA21'},
-    {pass:S.macd>S.msig&&S.mhist>0, w:2, label:'MACD ↑'},
-    {pass:S.rsi>=40&&S.rsi<68, w:2, label:'RSI '+Math.round(S.rsi)},
-    {pass:bbPct<0.5,          w:2, label:'BB منطقة شراء'},
-    {pass:S.ema21>S.ema50,    w:1, label:'EMA21 > EMA50'},
+    // مؤشرات رئيسية (وزن 3)
+    {pass:S.stD===1,                          w:3, label:'SuperTrend ↑'},
+    {pass:S.vwap>0 && p>vwap,                 w:3, label:'فوق VWAP'},
+    // مومنتم (وزن 2)
+    {pass:S.ema9>0 && S.ema9>S.ema21,         w:2, label:'EMA9 > EMA21'},
+    {pass:S.mhist>0 && S.macd>S.msig,         w:2, label:'MACD ↑'},
+    {pass:S.rsi>=42 && S.rsi<65,              w:2, label:'RSI '+Math.round(S.rsi)},
+    {pass:bbPct<0.45,                          w:2, label:'BB منطقة شراء'},
+    // اتجاه عام (وزن 1)
+    {pass:S.ema21>S.ema50,                    w:1, label:'EMA21 > EMA50'},
+    {pass:S.sk<60,                             w:1, label:'Stoch '+Math.round(S.sk)},
+    // تأكيد إضافي (وزن 1)
+    {pass:p>S.bbB,                             w:1, label:'فوق MA20'},
+    {pass:S.obv>S.obvE,                        w:1, label:'OBV صاعد'},
   ];
+
+  // ══ شروط البيع PUT (20 نقطة) ══
   const sc=[
-    {pass:S.stD===-1,         w:3, label:'SuperTrend ↓'},
-    {pass:vwap>0&&p<vwap*0.9995, w:3, label:'تحت VWAP'},
-    {pass:S.ema9>0&&S.ema9<S.ema21, w:2, label:'EMA9 < EMA21'},
-    {pass:S.macd<S.msig&&S.mhist<0, w:2, label:'MACD ↓'},
-    {pass:S.rsi>55&&S.rsi<=80, w:2, label:'RSI '+Math.round(S.rsi)},
-    {pass:bbPct>0.5,           w:2, label:'BB منطقة بيع'},
-    {pass:S.ema21<S.ema50,     w:1, label:'EMA21 < EMA50'},
+    {pass:S.stD===-1,                          w:3, label:'SuperTrend ↓'},
+    {pass:S.vwap>0 && p<vwap,                 w:3, label:'تحت VWAP'},
+    {pass:S.ema9>0 && S.ema9<S.ema21,         w:2, label:'EMA9 < EMA21'},
+    {pass:S.mhist<0 && S.macd<S.msig,         w:2, label:'MACD ↓'},
+    {pass:S.rsi>55 && S.rsi<=78,              w:2, label:'RSI '+Math.round(S.rsi)},
+    {pass:bbPct>0.55,                          w:2, label:'BB منطقة بيع'},
+    {pass:S.ema21<S.ema50,                    w:1, label:'EMA21 < EMA50'},
+    {pass:S.sk>40,                             w:1, label:'Stoch '+Math.round(S.sk)},
+    {pass:p<S.bbB,                             w:1, label:'تحت MA20'},
+    {pass:S.obv<S.obvE,                        w:1, label:'OBV هابط'},
   ];
 
-  const bPassed=bc.filter(c=>c.pass),sPassed=sc.filter(c=>c.pass);
-  const bScore=bPassed.reduce((s,c)=>s+c.w,0),sScore=sPassed.reduce((s,c)=>s+c.w,0);
-  const bCount=bPassed.length,sCount=sPassed.length;
-  const maxScore=15;
-  const bPct=Math.round(bScore/maxScore*100),sPct=Math.round(sScore/maxScore*100);
-  const bLabels=bPassed.map(c=>c.label),sLabels=sPassed.map(c=>c.label);
-  const bHasCore=bPassed.some(c=>c.label==='SuperTrend ↑'||c.label==='فوق VWAP');
-  const sHasCore=sPassed.some(c=>c.label==='SuperTrend ↓'||c.label==='تحت VWAP');
-  const isBuy =bScore>=6&&bCount>=3&&bScore>sScore&&bHasCore;
-  const isSell=sScore>=6&&sCount>=3&&sScore>bScore&&sHasCore;
+  const bPassed=bc.filter(c=>c.pass), sPassed=sc.filter(c=>c.pass);
+  const bScore=bPassed.reduce((s,c)=>s+c.w,0);
+  const sScore=sPassed.reduce((s,c)=>s+c.w,0);
+  const maxScore=20;
+  const bPct=Math.round(bScore/maxScore*100);
+  const sPct=Math.round(sScore/maxScore*100);
+  const bLabels=bPassed.map(c=>c.label);
+  const sLabels=sPassed.map(c=>c.label);
 
-  return{isBuy,isSell,bs:bCount,ss:sCount,bScore,sScore,bPct,sPct,maxScore,
-    bLabels,sLabels,bc,sc,conviction:isBuy?bPct:isSell?sPct:Math.max(bPct,sPct)};
+  // ══ شروط الإشارة الصارمة ══
+  const bHasCore = bPassed.some(c=>c.label==='SuperTrend ↑') &&
+                   bPassed.some(c=>c.label==='فوق VWAP');
+  const sHasCore = sPassed.some(c=>c.label==='SuperTrend ↓') &&
+                   sPassed.some(c=>c.label==='تحت VWAP');
+
+  // يجب: نقاط >= 8 (40%) + core + ليس وقت سيئ + ليس سوق جانبي
+  const isBuy  = !badTime && !sideways && !lowATR &&
+                 bScore>=8 && bScore>sScore && bHasCore;
+  const isSell = !badTime && !sideways && !lowATR &&
+                 sScore>=8 && sScore>bScore && sHasCore;
+
+  return {isBuy,isSell,bs:bPassed.length,ss:sPassed.length,
+    bScore,sScore,bPct,sPct,maxScore,bLabels,sLabels,bc,sc,
+    badTime,sideways,conviction:isBuy?bPct:isSell?sPct:0};
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -419,91 +455,76 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
   const etH = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
   const hoursLeft = Math.max(16.0 - etH, 0.1);
   const sessionIcon = hoursLeft<1?'🔴':hoursLeft<2?'🟡':'🟢';
-  const sessionNote = hoursLeft<1?'آخر ساعة ⚠️':hoursLeft<2?'آخر ساعتين':hoursLeft<4?'منتصف الجلسة':'بداية الجلسة';
+  const sessionNote = hoursLeft<1?'آخر ساعة':hoursLeft<2?'آخر ساعتين':hoursLeft<4?'منتصف الجلسة':'بداية الجلسة';
 
-  // تاريخ انتهاء SPXW
+  // ══ مستوى الإشارة ══
+  const sigLevel = score>=8?'A ⭐ قوية جداً':'B ✅ جيدة';
+
+  // ══ تاريخ SPXW ══
   const expDate = new Date().toLocaleDateString('en-US',{
     timeZone:'America/New_York', month:'short', day:'2-digit', year:'2-digit'
   }).replace(', ',' \'');
 
-  // ══ حساب السترايك الأمثل بـ Black-Scholes (IV=9% واقعي) ══
+  // ══ سترايك SPXW الأمثل بـ Black-Scholes ══
   function bsOpt(S,K,T,sig,opt){
-    if(T<=0) return Math.max(opt==='c'?S-K:K-S, 0);
+    if(T<=0) return Math.max(opt==='c'?S-K:K-S,0);
     const sqt=Math.sqrt(T);
     const d1=(Math.log(S/K)+(0.053+0.5*sig*sig)*T)/(sig*sqt);
     const d2=d1-sig*sqt;
-    const N=x=>{
-      const p=[0.319381530,-0.356563782,1.781477937,-1.821255978,1.330274429];
-      const t=1/(1+0.2316419*Math.abs(x));
-      let poly=0, tp=t;
-      for(const c of p){poly+=c*tp;tp*=t;}
-      const nd=Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);
-      return x>=0?1-nd*poly:nd*poly;
-    };
-    if(opt==='c') return Math.max(S*N(d1)-K*Math.exp(-0.053*T)*N(d2), 0);
-    return Math.max(K*Math.exp(-0.053*T)*(1-N(d2))-S*(1-N(d1)), 0);
+    const N=x=>{const p2=[0.319381530,-0.356563782,1.781477937,-1.821255978,1.330274429];const t=1/(1+0.2316419*Math.abs(x));let poly=0,tp=t;for(const c of p2){poly+=c*tp;tp*=t;}const nd=Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);return x>=0?1-nd*poly:nd*poly;};
+    if(opt==='c') return Math.max(S*N(d1)-K*Math.exp(-0.053*T)*N(d2),0);
+    return Math.max(K*Math.exp(-0.053*T)*(1-N(d2))-S*(1-N(d1)),0);
   }
-
-  // ابحث عن السترايك الذي يعطي premium أقرب لـ $6.50
-  const T   = hoursLeft/(252*6.5);
-  const sig = 0.09; // IV واقعي لـ SPX
-  const TARGET_PREM = 6.50;
-  let bestStrike = Math.round(p/5)*5;
-  let bestDiff   = 9999;
-  let bestPrem   = 0;
-  for(let diff=0; diff<=80; diff+=5){
-    const K = Math.round(p/5)*5 + (isL ? diff : -diff);
-    const prem = bsOpt(p, K, T, sig, isL?'c':'p');
-    if(Math.abs(prem - TARGET_PREM) < bestDiff){
-      bestDiff   = Math.abs(prem - TARGET_PREM);
-      bestStrike = K;
-      bestPrem   = prem;
-    }
+  const T=hoursLeft/(252*6.5), sig=0.09, TARGET=6.50;
+  let bestStrike=Math.round(p/5)*5, bestPrem=0, bestDiff=9999;
+  for(let diff=0;diff<=80;diff+=5){
+    const K=Math.round(p/5)*5+(isL?diff:-diff);
+    const prem=bsOpt(p,K,T,sig,isL?'c':'p');
+    if(Math.abs(prem-TARGET)<bestDiff){bestDiff=Math.abs(prem-TARGET);bestStrike=K;bestPrem=prem;}
   }
   const premVal  = Math.round(bestPrem*100)/100;
   const costVal  = Math.round(premVal*100);
-  const slPrem   = Math.round(premVal*0.50*100)/100;  // وقف -50%
+  const slPrem   = Math.round(premVal*0.50*100)/100;
   const slCost   = Math.round(slPrem*100);
-  const tgtPrem  = Math.round(premVal*1.80*100)/100;  // هدف +80%
+  const tgtPrem  = Math.round(premVal*1.80*100)/100;
   const tgtCost  = Math.round(tgtPrem*100);
-  const otmDist  = Math.abs(bestStrike - Math.round(p/5)*5);
+  const otmDist  = Math.abs(bestStrike-Math.round(p/5)*5);
+  const otmLabel = otmDist===0?'ATM':'OTM +'+otmDist+' نقطة';
 
   // ══ المؤشرات ══
-  const rsiV  = S.rsi.toFixed(1);
-  const macdV = S.mhist>0?'▲':'▼';
-  const stV   = S.stD===1?'▲':'▼';
-  const vwapLine = S.vwap>0?`\n📊 VWAP: <b>${fmt(S.vwap)}</b>`:'';
+  const rsiV=S.rsi.toFixed(1), macdV=S.mhist>0?'▲':'▼', stV=S.stD===1?'▲':'▼';
+  const vwapLine=S.vwap>0?`\n📊 VWAP: <b>${fmt(S.vwap)}</b>`:'';
 
   await tg(
 `${isL?'🚀':'🔻'} <b>NEXUS v7 — ${isL?'CALL شراء':'PUT بيع'}</b>
-${sessionIcon} ${sessionNote}  |  ATR: <b>${atr.toFixed(0)}</b> نقطة
+${sessionIcon} ${sessionNote}  |  مستوى: <b>${sigLevel}</b>
 
 ━━━━━━━━━━━━━━━━━━
 📊 <b>SPX</b>  💰 <b>${fmt(p)}</b>${vwapLine}
-📐 RSI:<b>${rsiV}</b>  MACD:<b>${macdV}</b>  ST:<b>${stV}</b>  ${S.mktState}
+📐 RSI:<b>${rsiV}</b>  MACD:<b>${macdV}</b>  ST:<b>${stV}</b>
 ✅ قوة الإشارة: <b>${score}/15</b>
 
 ━━━━━━━━━━━━━━━━━━
 ${isL?'📈':'📉'} <b>SPXW ${isL?'CALL':'PUT'} ${bestStrike}</b>  |  0DTE  |  ${expDate}
+📍 ${otmLabel}
 💵 Premium: <b>$${premVal}</b>/سهم  (~<b>$${costVal}</b>/عقد)
-   ${otmDist===0?'📍 ATM (في السعر)':'📍 OTM '+otmDist+' نقطة من السعر'}
 
-🛑 اخرج إذا نزل Premium → <b>$${slPrem}</b>  (-50% = -$${costVal-slCost})
-🎯 اخرج إذا وصل Premium → <b>$${tgtPrem}</b>  (+80% = +$${tgtCost-costVal})
+🛑 اخرج إذا نزل → <b>$${slPrem}</b>  (خسارة ~$${costVal-slCost})
+🎯 اخرج إذا وصل → <b>$${tgtPrem}</b>  (ربح ~$${tgtCost-costVal})
 
 ━━━━━━━━━━━━━━━━━━
 🎯 <b>أهداف SPX:</b>
-├ TP1  <b>${fmt(tp1)}</b>  ${fmtP((tp1-p)/p*100)}  (+${tp1Pts} نقطة)
-├ TP2  <b>${fmt(tp2)}</b>  ${fmtP((tp2-p)/p*100)}  (+${tp2Pts} نقطة)
-└ TP3  <b>${fmt(tp3)}</b>  ${fmtP((tp3-p)/p*100)}  (+${tp3Pts} نقطة)
+├ TP1  <b>${fmt(tp1)}</b>  (+${tp1Pts}pt | ${fmtP((tp1-p)/p*100)})
+├ TP2  <b>${fmt(tp2)}</b>  (+${tp2Pts}pt | ${fmtP((tp2-p)/p*100)})
+└ TP3  <b>${fmt(tp3)}</b>  (+${tp3Pts}pt | ${fmtP((tp3-p)/p*100)})
 
-🛑 وقف SPX: <b>${fmt(sl)}</b>  ${fmtP((sl-p)/p*100)}  (-${slPts} نقطة)
+🛑 وقف SPX: <b>${fmt(sl)}</b>  (-${slPts}pt | ${fmtP((sl-p)/p*100)})
 📏 R:R = 1:${rr}
 ━━━━━━━━━━━━━━━━━━
 ⏰ ${nowAr()}
 ⚠️ <i>ليست نصيحة مالية</i>`);
 
-  log(`📤 ${type} SPXW ${bestStrike} ${isL?'CALL':'PUT'} prem:$${premVal} cost:$${costVal} TP1:${fmt(tp1)} SL:${fmt(sl)}`);
+  log(`📤 ${type} Lvl:${sigLevel[0]} SPXW ${bestStrike} prem:$${premVal} TP1:${fmt(tp1)} SL:${fmt(sl)}`);
 }
 
 async function alertSLBroken(){
@@ -557,41 +578,78 @@ ${mktLn()}
 // ══════════════════════════════════════════════════════════════════
 async function checkAlerts(){
   const sig=computeSig();
-  const{isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction}=sig;
+  const {isBuy,isSell,bScore,sScore,bPct,sPct,bLabels,sLabels}=sig;
   const cur=isBuy?'BUY':isSell?'SELL':'WAIT';
-  const score=isBuy?bScore:isSell?sScore:0;
-  const p=S.price, prev=S.lastSig;
+  const p=S.price;
 
+  // ══ إدارة الصفقة المفتوحة ══
   if(TRADE.active){
-    const isL=TRADE.type==='BUY',d=isL?1:-1;
-    const asl=TRADE.trailSl||TRADE.sl;
-    if((isL&&p<=asl)||(!isL&&p>=asl)){await alertSLBroken();return;}
-    const slLeft=Math.abs(p-asl),slDist=Math.abs(TRADE.entry-TRADE.sl);
-    if(!TRADE.slWarned&&slLeft<slDist*0.25){
-      TRADE.slWarned=true;
-      if(canAlert('slWarn',120))
-        await tg(`⚠️ <b>NEXUS v7 — تحذير</b>\nSPX قريب من وقف الخسارة!\nSPX: <b>${fmt(p)}</b> | SL: <b>${fmt(asl)}</b>\n⏰ ${nowAr()}`);
+    const isL=TRADE.type==='BUY';
+    const trailSl=TRADE.trailSl||TRADE.sl;
+    const age=TRADE.openedAt?(Date.now()-TRADE.openedAt.getTime())/60000:0;
+
+    // Timeout: اخرج بعد 45 دقيقة إذا لم يصل TP1
+    if(!TRADE.tp1Hit && age>45 && canAlert('timeout',300)){
+      TRADE.active=false; TRADE.type=null; TRADE.entry=0;
+      await tg(`⏱ <b>NEXUS v7 — انتهاء الوقت</b>\n\n45 دقيقة بدون TP1\n📊 SPX: <b>${fmt(p)}</b>\n📍 الدخول: <b>${fmt(TRADE.entry||p)}</b>\n💡 <i>اخرج من الصفقة</i>\n⏰ ${nowAr()}`);
+      return;
     }
-    if(!TRADE.tp1Hit&&((isL&&p>=TRADE.tp1)||(!isL&&p<=TRADE.tp1))){TRADE.tp1Hit=true;await alertTPHit(1,TRADE.tp1);}
-    if(TRADE.tp1Hit&&!TRADE.tp2Hit&&((isL&&p>=TRADE.tp2)||(!isL&&p<=TRADE.tp2))){TRADE.tp2Hit=true;await alertTPHit(2,TRADE.tp2);}
-    if(TRADE.tp2Hit&&((isL&&p>=TRADE.tp3)||(!isL&&p<=TRADE.tp3))){TRADE.active=false;await alertTPHit(3,TRADE.tp3);}
-    // Trailing SL
-    if(TRADE.tp1Hit){
-      const newSl=isL?Math.max(TRADE.trailSl,p-S.atr*0.5):Math.min(TRADE.trailSl,p+S.atr*0.5);
-      TRADE.trailSl=newSl;
+
+    // كسر SL
+    if((isL&&p<=trailSl)||(!isL&&p>=trailSl)){ await alertSLBroken(); return; }
+
+    // تحذير اقتراب SL
+    const slDist=Math.abs(TRADE.entry-TRADE.sl);
+    if(!TRADE.slWarned&&Math.abs(p-trailSl)<slDist*0.3){
+      TRADE.slWarned=true; await alertSLWarn();
+    }
+
+    // TP1 → انقل SL للدخول (breakeven)
+    if(!TRADE.tp1Hit){
+      if(!TRADE.nearTp1&&Math.abs(TRADE.tp1-p)<5){ TRADE.nearTp1=true; await alertNearTP(1,TRADE.tp1); }
+      if((isL&&p>=TRADE.tp1)||(!isL&&p<=TRADE.tp1)){
+        TRADE.tp1Hit=true;
+        TRADE.trailSl=TRADE.entry; // breakeven
+        await alertTPHit(1,TRADE.tp1);
+      }
+    }
+
+    // TP2 → trailing stop 5 نقاط
+    if(TRADE.tp1Hit&&!TRADE.tp2Hit){
+      // تحديث trailing stop
+      const newTrail = isL ? p-5 : p+5;
+      if(isL && newTrail>TRADE.trailSl) TRADE.trailSl=newTrail;
+      if(!isL && newTrail<TRADE.trailSl) TRADE.trailSl=newTrail;
+
+      if(!TRADE.nearTp2&&Math.abs(TRADE.tp2-p)<5){ TRADE.nearTp2=true; await alertNearTP(2,TRADE.tp2); }
+      if((isL&&p>=TRADE.tp2)||(!isL&&p<=TRADE.tp2)){
+        TRADE.tp2Hit=true; await alertTPHit(2,TRADE.tp2);
+      }
+    }
+
+    // TP3
+    if(TRADE.tp2Hit){
+      if((isL&&p>=TRADE.tp3)||(!isL&&p<=TRADE.tp3)){
+        await alertTPHit(3,TRADE.tp3);
+        Object.assign(TRADE,{active:false,type:null,entry:0});
+      }
+    }
+
+    // إشارة عكسية قوية
+    if(cur!=='WAIT'&&cur!==TRADE.type&&canAlert('reverse',600)){
+      await alertCancel('إشارة عكسية قوية — فكّر في الخروج');
     }
     return;
   }
 
-  // إشارة جديدة
-  if(cur!=='WAIT'&&cur!==prev&&score>=6&&canAlert('entry',300)){
-    S.lastSig=cur; S.lastScore=score;
-    await alertEntry(cur,score);
+  // ══ إشارة جديدة — cooldown 45 دقيقة ══
+  if(cur!=='WAIT'&&cur!==S.lastSig){
+    if(!canAlert('entry',45*60)) return; // 45 دقيقة بين التوصيات
+    S.lastSig=cur;
+    await alertEntry(cur,bScore,sScore,bLabels,sLabels);
+  } else {
+    if(cur==='WAIT') S.lastSig='WAIT';
   }
-
-  // تغيير اتجاه SuperTrend
-  if(S.stD===1&&prev==='SELL')  await alertRegimeChange('UP');
-  if(S.stD===-1&&prev==='BUY') await alertRegimeChange('DOWN');
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -766,7 +824,7 @@ function getRefreshInterval(){
   const day=new Date().getUTCDay();
   if(day===0||day===6) return 10*60*1000;
   if(etH>=4&&etH<9.5)  return 2*60*1000;
-  if(etH>=9.5&&etH<16) return 30*1000;
+  if(etH>=9.5&&etH<16) return 15*1000;  // 15 ثانية في الجلسة
   if(etH>=16&&etH<20)  return 2*60*1000;
   return 10*60*1000;
 }
