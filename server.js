@@ -179,104 +179,108 @@ function calcST(h,l,c,n=10,f=3){
 //  حساب الإشارة
 // ══════════════════════════════════════════
 function computeSig(){
-  const p = S.price;
-  if(!p || p===0) return {isBuy:false,isSell:false,bs:0,ss:0,bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],conviction:0};
+  const p=S.price;
+  if(!p||p===0) return {isBuy:false,isSell:false,bs:0,ss:0,bScore:0,sScore:0,
+    bPct:0,sPct:0,bLabels:[],sLabels:[],conviction:0,bc:[],sc:[]};
 
-  // ══════════════════════════════════════════════════════
-  // نظام إشارات Intraday SPX — مؤشرات موزونة احترافياً
-  // المجموع الأقصى = 15 نقطة
-  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════
+  // نظام توصيات المضارب اليومي — Intraday SPX (15 نقطة)
+  // يركز على: الاتجاه قصير المدى + الزخم + مستويات التداول
+  // ══════════════════════════════════════════════════════════════
 
-  // ─── شروط الشراء CALL ───────────────────────────────
+  const atr = S.atr || 20;
+  const vwap = S.vwap || p;
+  const bbMid = S.bbB || p;
+  const bbRange = (S.bbU - S.bbL) || (atr * 2);
+  const bbPct = bbRange > 0 ? (p - S.bbL) / bbRange : 0.5; // 0=أسفل 1=أعلى
+
+  // ─── شروط الشراء CALL ─────────────────────────────────────
   const bc = [
-    // SuperTrend صاعد — الأقوى (وزن 3)
+    // 🏆 SuperTrend صاعد — أقوى مؤشر اتجاه (وزن 3)
     { pass: S.stD === 1,
-      w:3, label:'SuperTrend↑' },
+      w:3, label:'SuperTrend ↑', desc:'الاتجاه صاعد' },
 
-    // السعر فوق VWAP — مهم جداً للإنترادي (وزن 3)
-    { pass: S.vwap>0 && p > S.vwap,
-      w:3, label:'P>VWAP' },
+    // 🏆 السعر فوق VWAP — مرجع المضاربين اليوميين (وزن 3)
+    { pass: vwap > 0 && p > vwap * 1.0005,
+      w:3, label:'فوق VWAP', desc:'قوة المشترين' },
 
-    // EMA9 فوق EMA21 — زخم قصير المدى (وزن 2)
-    { pass: S.ema9>0 && S.ema9 > S.ema21,
-      w:2, label:'EMA9>EMA21' },
+    // ⚡ EMA9 فوق EMA21 — زخم قصير المدى (وزن 2)
+    { pass: S.ema9 > 0 && S.ema9 > S.ema21,
+      w:2, label:'EMA9 > EMA21', desc:'زخم صاعد' },
 
-    // MACD تقاطع صاعد — تأكيد الزخم (وزن 2)
+    // ⚡ MACD تقاطع صاعد — تأكيد الزخم (وزن 2)
     { pass: S.macd > S.msig && S.mhist > 0,
-      w:2, label:'MACD↑' },
+      w:2, label:'MACD ↑', desc:'تقاطع صاعد' },
 
-    // RSI مناسب للشراء 40-65 (ليس في ذروة شراء) (وزن 2)
-    { pass: S.rsi >= 40 && S.rsi <= 65,
-      w:2, label:'RSI_zone' },
+    // ⚡ RSI في منطقة الشراء 40-68 (وزن 2)
+    { pass: S.rsi >= 40 && S.rsi < 68,
+      w:2, label:'RSI '+Math.round(S.rsi), desc:'منطقة شراء' },
 
-    // Bollinger — السعر في النصف السفلي (وزن 2)
-    { pass: S.bbB>0 && p < S.bbB,
-      w:2, label:'P<BB_mid' },
+    // 📊 Bollinger — السعر في النصف السفلي (وزن 2)
+    { pass: bbPct < 0.5,
+      w:2, label:'BB منطقة شراء', desc:'مساحة للصعود' },
 
-    // EMA21 > EMA50 — اتجاه عام صاعد (وزن 1)
+    // 📊 EMA21 > EMA50 — اتجاه عام صاعد (وزن 1)
     { pass: S.ema21 > S.ema50,
-      w:1, label:'EMA21>50' },
+      w:1, label:'EMA21 > EMA50', desc:'اتجاه صاعد' },
   ];
 
-  // ─── شروط البيع PUT ────────────────────────────────
+  // ─── شروط البيع PUT ────────────────────────────────────────
   const sc = [
-    // SuperTrend هابط — الأقوى (وزن 3)
+    // 🏆 SuperTrend هابط — أقوى مؤشر اتجاه (وزن 3)
     { pass: S.stD === -1,
-      w:3, label:'SuperTrend↓' },
+      w:3, label:'SuperTrend ↓', desc:'الاتجاه هابط' },
 
-    // السعر تحت VWAP — مهم جداً للإنترادي (وزن 3)
-    { pass: S.vwap>0 && p < S.vwap,
-      w:3, label:'P<VWAP' },
+    // 🏆 السعر تحت VWAP — ضغط بيع (وزن 3)
+    { pass: vwap > 0 && p < vwap * 0.9995,
+      w:3, label:'تحت VWAP', desc:'قوة البائعين' },
 
-    // EMA9 تحت EMA21 — زخم هابط (وزن 2)
-    { pass: S.ema9>0 && S.ema9 < S.ema21,
-      w:2, label:'EMA9<EMA21' },
+    // ⚡ EMA9 تحت EMA21 — زخم هابط (وزن 2)
+    { pass: S.ema9 > 0 && S.ema9 < S.ema21,
+      w:2, label:'EMA9 < EMA21', desc:'زخم هابط' },
 
-    // MACD تقاطع هابط — تأكيد الزخم (وزن 2)
+    // ⚡ MACD تقاطع هابط — تأكيد الهبوط (وزن 2)
     { pass: S.macd < S.msig && S.mhist < 0,
-      w:2, label:'MACD↓' },
+      w:2, label:'MACD ↓', desc:'تقاطع هابط' },
 
-    // RSI في منطقة البيع 55-80 (وزن 2)
-    { pass: S.rsi >= 55 && S.rsi <= 80,
-      w:2, label:'RSI_zone' },
+    // ⚡ RSI في منطقة البيع 55-80 (وزن 2)
+    { pass: S.rsi > 55 && S.rsi <= 80,
+      w:2, label:'RSI '+Math.round(S.rsi), desc:'منطقة بيع' },
 
-    // Bollinger — السعر في النصف العلوي (وزن 2)
-    { pass: S.bbB>0 && p > S.bbB,
-      w:2, label:'P>BB_mid' },
+    // 📊 Bollinger — السعر في النصف العلوي (وزن 2)
+    { pass: bbPct > 0.5,
+      w:2, label:'BB منطقة بيع', desc:'مقاومة محتملة' },
 
-    // EMA21 < EMA50 — اتجاه عام هابط (وزن 1)
+    // 📊 EMA21 < EMA50 — اتجاه عام هابط (وزن 1)
     { pass: S.ema21 < S.ema50,
-      w:1, label:'EMA21<50' },
+      w:1, label:'EMA21 < EMA50', desc:'اتجاه هابط' },
   ];
 
-  // ─── حساب النقاط ────────────────────────────────────
+  // ─── حساب النقاط ──────────────────────────────────────────
   const bPassed = bc.filter(c=>c.pass);
   const sPassed = sc.filter(c=>c.pass);
   const bScore  = bPassed.reduce((s,c)=>s+c.w, 0);
   const sScore  = sPassed.reduce((s,c)=>s+c.w, 0);
   const bCount  = bPassed.length;
   const sCount  = sPassed.length;
-  const maxScore= 15;
-  const bPct    = Math.round(bScore/maxScore*100);
-  const sPct    = Math.round(sScore/maxScore*100);
+  const maxScore = 15;
+  const bPct = Math.round(bScore/maxScore*100);
+  const sPct = Math.round(sScore/maxScore*100);
   const bLabels = bPassed.map(c=>c.label);
   const sLabels = sPassed.map(c=>c.label);
 
-  // ─── شرط الإشارة ────────────────────────────────────
-  // يجب: نقاط >= 7 (من 15) + شروط >= 3 + أقوى من الاتجاه المعاكس
-  // SuperTrend أو VWAP يجب أن يكون من الشروط المتحققة
-  const bHasCore = bPassed.some(c=>c.label==='SuperTrend↑'||c.label==='P>VWAP');
-  const sHasCore = sPassed.some(c=>c.label==='SuperTrend↓'||c.label==='P<VWAP');
-
-  const isBuy  = bScore>=7 && bCount>=3 && bScore>sScore && bHasCore;
-  const isSell = sScore>=7 && sCount>=3 && sScore>bScore && sHasCore;
+  // ─── شرط الإشارة للمضارب اليومي ──────────────────────────
+  // يجب: SuperTrend أو VWAP + نقاط >= 6 + عدد >= 3
+  const bHasCore = bPassed.some(c=>c.label==='SuperTrend ↑'||c.label==='فوق VWAP');
+  const sHasCore = sPassed.some(c=>c.label==='SuperTrend ↓'||c.label==='تحت VWAP');
+  const isBuy  = bScore>=6 && bCount>=3 && bScore>sScore && bHasCore;
+  const isSell = sScore>=6 && sCount>=3 && sScore>bScore && sHasCore;
 
   return {
-    isBuy, isSell,
-    bs:bCount, ss:sCount,
+    isBuy, isSell, bs:bCount, ss:sCount,
     bScore, sScore, bPct, sPct, maxScore,
-    bLabels, sLabels,
-    conviction: isBuy ? bPct : isSell ? sPct : 0
+    bLabels, sLabels, bc, sc,
+    conviction: isBuy?bPct : isSell?sPct : Math.max(bPct,sPct)
   };
 }
 
@@ -321,6 +325,7 @@ async function fetchLivePrice(sym) {
             else if(etH>=16&&etH<20) {state='POST';   isExt=true;}
           }
           log('[Finnhub OK] SPX='+price.toFixed(2)+' state='+state);
+          S._lastSource='Finnhub';
           return {price,isExt,state,change:chg,changePct:pct,
                   high:d.h||price,low:d.l||price,open:d.o||price,prev,source:'Finnhub'};
         }
@@ -348,6 +353,7 @@ async function fetchLivePrice(sym) {
       if(isPost&&qt.postMarketPrice) {price=qt.postMarketPrice; chg=qt.postMarketChange||0;pct=qt.postMarketChangePercent||0;}
       if(!price) continue;
       log('[Yahoo v7 OK] SPX='+price.toFixed(2)+' state='+state);
+      S._lastSource='Yahoo_v7';
       return {price,isExt:isPre||isPost,state,change:chg,changePct:pct,
               high:qt.regularMarketDayHigh||price,low:qt.regularMarketDayLow||price,
               open:qt.regularMarketOpen||price,prev:qt.regularMarketPreviousClose||price,source:'Yahoo_v7'};
@@ -491,7 +497,7 @@ async function loadMarketData(){
     S.vol      = vols.at(-1) || 0;
     S.mktState  = mktState;
     S.isExt     = (mktState==='PRE'||mktState==='PREPRE'||mktState==='POST'||mktState==='POSTPOST');
-    S.dataSource= qt?.source || 'Yahoo';
+    S.dataSource= S._lastSource || 'Yahoo';
     S.history  = closes;
 
     const c=closes.slice(-300), h=highs.slice(-300), l=lows.slice(-300);
@@ -801,8 +807,10 @@ function keepAlive(){
 // ══════════════════════════════════════════
 
 // البيانات الحية للداشبورد
-app.get('/api/market',(req,res)=>{
-  const {isBuy,isSell,bs,ss}=computeSig();
+app.get('/api/market',async(req,res)=>{
+  if(S.price===0){ log('⚡ جلب فوري...'); await loadMarketData(); }
+  const sig=computeSig();
+  const {isBuy,isSell,bs,ss,bScore=0,sScore=0,bPct=0,sPct=0,bLabels=[],sLabels=[],conviction=0}=sig;
   res.json({
     price:S.price, prev:S.prev, open:S.open, high:S.high, low:S.low,
     vol:S.vol, volR:S.volR, mktState:S.mktState,
@@ -813,7 +821,7 @@ app.get('/api/market',(req,res)=>{
     obv:S.obv, obvE:S.obvE, fibH:S.fibH, fibL:S.fibL,
     isExt:S.isExt||false, dataSource:S.dataSource||'Yahoo',
     history:S.history.slice(-300),
-    sig:{isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction},
+    sig:{isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction}, conviction,
     trade:{
       active:TRADE.active, type:TRADE.type, entry:TRADE.entry,
       tp1:TRADE.tp1, tp2:TRADE.tp2, tp3:TRADE.tp3,
@@ -884,14 +892,13 @@ async function fetchAllNews() {
     return NEWS_CACHE.data;
 
   const feeds = [
-    // ══ مصادر عربية حصراً ══
-    { url:'https://www.argaam.com/ar/rss/feeds/1',                              src:'أرقام',        lang:'ar' },
-    { url:'https://arabic.cnbc.com/id/100727362/device/rss/rss.html',           src:'CNBC عربية',   lang:'ar' },
-    { url:'https://arabic.reuters.com/rssFeed/businessNews',                     src:'رويترز عربي',  lang:'ar' },
-    { url:'https://www.alarabiya.net/alandalus/rss.xml',                         src:'العربية',      lang:'ar' },
-    { url:'https://www.mubasher.info/news/rss?topics=markets',                   src:'مباشر',        lang:'ar' },
-    { url:'https://al-ain.com/rss/economy',                                      src:'العين الاقتصادي', lang:'ar' },
-    { url:'https://www.alborsanews.com/feed',                                    src:'البورصة نيوز',  lang:'ar' },
+    // ══ مصادر مالية موثوقة تعمل بدون حجب ══
+    { url:'https://feeds.bbci.co.uk/arabic/business/rss.xml',         src:'BBC عربي',     lang:'ar' },
+    { url:'https://www.aljazeera.net/rss/economy/index.xml',           src:'الجزيرة',      lang:'ar' },
+    { url:'https://feeds.marketwatch.com/marketwatch/topstories/',     src:'MarketWatch',  lang:'en' },
+    { url:'https://finance.yahoo.com/news/rssindex',                    src:'Yahoo Finance',lang:'en' },
+    { url:'https://feeds.reuters.com/reuters/businessNews',             src:'Reuters',      lang:'en' },
+    { url:'https://www.investing.com/rss/news_25.rss',                  src:'Investing',    lang:'en' },
   ];
 
   const results = await Promise.allSettled(
