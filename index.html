@@ -1818,6 +1818,143 @@ body{
     </div>
   </div>
 
+  <!-- ── الوحدة 6: المؤشرات التقنية على الشارت ── -->
+  <div class="card" style="margin-bottom:10px">
+    <div class="card-title">الوحدة ٦ · المؤشرات التقنية على الشارت</div>
+
+    <!-- EMA -->
+    <div class="lesson-wrap">
+      <div class="lesson-head" onclick="toggleLesson(this)">
+        <span>📈 المتوسطات المتحركة — EMA 9 / 21 / 50 / 200</span><span>▾</span>
+      </div>
+      <div class="lesson-body">
+        <p>المتوسطات المتحركة تُلطّف تحركات السعر وتكشف الاتجاه العام.</p>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px;border-left:3px solid rgba(0,191,255,0.8)">
+            <b style="color:rgba(0,191,255,1)">EMA 9</b> — أسرع المتوسطات. يتفاعل مع أي تحرك صغير. مفيد لتحديد دخول سريع.
+          </div>
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px;border-left:3px solid rgba(179,136,255,0.8)">
+            <b style="color:rgba(179,136,255,1)">EMA 21</b> — متوسط قصير المدى. تقاطعه مع EMA9 من أشهر إشارات الدخول.
+          </div>
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px;border-left:3px solid rgba(255,100,0,0.8)">
+            <b style="color:rgba(255,120,0,1)">EMA 50</b> — متوسط متوسط المدى. كسره صعوداً = قوة، كسره هبوطاً = ضعف.
+          </div>
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px;border-left:3px solid rgba(255,180,0,0.8)">
+            <b style="color:rgba(255,200,0,1)">EMA 200</b> — الأقوى. يحدد الاتجاه طويل المدى. السعر فوقه = سوق صاعد عموماً.
+          </div>
+        </div>
+        <div style="margin-top:10px;padding:10px;background:rgba(0,240,128,.06);border:1px solid rgba(0,240,128,.15);border-radius:var(--r8);font-size:12px">
+          <b style="color:var(--up)">✅ إشارة شراء:</b> EMA9 يقطع EMA21 صعوداً + السعر فوق EMA50<br>
+          <b style="color:var(--dn)">🛑 إشارة بيع:</b> EMA9 يقطع EMA21 هبوطاً + السعر تحت EMA50
+        </div>
+      </div>
+    </div>
+
+    <!-- VWAP -->
+    <div class="lesson-wrap">
+      <div class="lesson-head" onclick="toggleLesson(this)">
+        <span style="color:rgba(232,184,75,0.95)">━━</span> VWAP — متوسط السعر المرجّح بالحجم<span>▾</span>
+      </div>
+      <div class="lesson-body">
+        <p>VWAP هو متوسط سعر اليوم مرجّحاً بحجم التداول. يُعدّ أهم مستوى في اليوم.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0">
+          <div style="background:rgba(0,240,128,.06);border:1px solid rgba(0,240,128,.15);border-radius:var(--r8);padding:10px;font-size:12px">
+            <div style="color:var(--up);margin-bottom:4px">📈 فوق VWAP</div>
+            المشترون مسيطرون — يفضل CALL
+          </div>
+          <div style="background:rgba(255,45,85,.06);border:1px solid rgba(255,45,85,.15);border-radius:var(--r8);padding:10px;font-size:12px">
+            <div style="color:var(--dn);margin-bottom:4px">📉 تحت VWAP</div>
+            البائعون مسيطرون — يفضل PUT
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--txt2)">يظهر على الشارت كخط ذهبي متقطع. يُعاد حساب VWAP كل يوم من جديد.</p>
+      </div>
+    </div>
+
+    <!-- Bollinger Bands -->
+    <div class="lesson-wrap">
+      <div class="lesson-head" onclick="toggleLesson(this)">
+        <span>〰️ Bollinger Bands — نطاقات بولينجر</span><span>▾</span>
+      </div>
+      <div class="lesson-body">
+        <p>ثلاثة خطوط: المتوسط الوسطي (SMA20) + نطاق علوي + نطاق سفلي (انحراف معياري ×2).</p>
+        <div style="display:flex;flex-direction:column;gap:6px;margin:10px 0">
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px">
+            <b style="color:rgba(100,200,255,0.9)">النطاق العلوي:</b> السعر فوقه = مشبع شراء، ربما يرتد.
+          </div>
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px">
+            <b style="color:rgba(180,180,255,0.9)">الخط الوسطي:</b> دعم/مقاومة متوسطة. العودة له تسمى "ارتداد للمتوسط".
+          </div>
+          <div style="padding:8px 12px;background:var(--bg2);border-radius:var(--r8);font-size:12px">
+            <b style="color:rgba(100,200,255,0.9)">النطاق السفلي:</b> السعر تحته = مشبع بيع، ربما يرتد.
+          </div>
+        </div>
+        <div style="padding:10px;background:rgba(255,184,0,.07);border:1px solid rgba(255,184,0,.2);border-radius:var(--r8);font-size:12px">
+          💡 <b>نطاق ضيق (Squeeze):</b> السوق يتجمّع قبل تحرك قوي — انتبه لكسر النطاق.
+        </div>
+      </div>
+    </div>
+
+    <!-- SuperTrend -->
+    <div class="lesson-wrap">
+      <div class="lesson-head" onclick="toggleLesson(this)">
+        <span>🟢🔴 SuperTrend — الاتجاه السائد</span><span>▾</span>
+      </div>
+      <div class="lesson-body">
+        <p>SuperTrend يحدد الاتجاه الرئيسي بنقاط مرسومة أسفل/فوق الشمعات.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0">
+          <div style="background:rgba(0,240,128,.06);border:1px solid rgba(0,240,128,.15);border-radius:var(--r8);padding:10px;text-align:center;font-size:12px">
+            <div style="font-size:20px">🟢</div>
+            <div style="color:var(--up);margin:4px 0">نقاط تحت الشمعة</div>
+            اتجاه صاعد — يفضل CALL
+          </div>
+          <div style="background:rgba(255,45,85,.06);border:1px solid rgba(255,45,85,.15);border-radius:var(--r8);padding:10px;text-align:center;font-size:12px">
+            <div style="font-size:20px">🔴</div>
+            <div style="color:var(--dn);margin:4px 0">نقاط فوق الشمعة</div>
+            اتجاه هابط — يفضل PUT
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--txt2)">هو أحد المؤشرين الإلزاميين في نظام NEXUS لتأكيد الإشارة (لا إشارة بدونه).</p>
+      </div>
+    </div>
+
+    <!-- Fibonacci -->
+    <div class="lesson-wrap">
+      <div class="lesson-head" onclick="toggleLesson(this)">
+        <span>📐 مستويات فيبوناتشي — Fibonacci Levels</span><span>▾</span>
+      </div>
+      <div class="lesson-body">
+        <p>تُحسب من أعلى وأدنى 20 شمعة أخيرة. تمثل مناطق دعم ومقاومة محتملة.</p>
+        <div style="display:flex;flex-direction:column;gap:5px;margin:10px 0">
+          <div style="display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px;font-size:12px">
+            <div style="color:rgba(255,220,100,0.9);font-family:var(--mono)">23.6%</div>
+            <div>تصحيح ضعيف — مقاومة خفيفة</div>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px;font-size:12px">
+            <div style="color:rgba(100,220,255,0.9);font-family:var(--mono)">38.2%</div>
+            <div>تصحيح متوسط — دعم/مقاومة معتدل</div>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px;font-size:12px">
+            <div style="color:rgba(180,180,255,0.9);font-family:var(--mono)">50.0%</div>
+            <div>نقطة وسط — أهم مناطق الارتداد</div>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px;font-size:12px">
+            <div style="color:rgba(100,220,255,0.95);font-family:var(--mono);font-weight:700">61.8%</div>
+            <div><b>الذهبية</b> — أقوى مستوى. ارتداد هنا شائع جداً</div>
+          </div>
+          <div style="display:grid;grid-template-columns:80px 1fr;align-items:center;gap:8px;font-size:12px">
+            <div style="color:rgba(255,180,100,0.9);font-family:var(--mono)">78.6%</div>
+            <div>تصحيح عميق — قرب نهاية الموجة</div>
+          </div>
+        </div>
+        <div style="padding:10px;background:rgba(0,240,128,.06);border:1px solid rgba(0,240,128,.15);border-radius:var(--r8);font-size:12px">
+          💡 كلما تقاطعت عدة مستويات (Fib + EMA + VWAP) عند نفس النقطة، كلما كانت <b style="color:var(--up)">أقوى وأكثر موثوقية</b>.
+        </div>
+      </div>
+    </div>
+
+  </div>
+
   <!-- ── الوحدة 5: شرح الداشبورد ── -->
   <div class="card" style="margin-bottom:10px;margin-top:0">
     <div class="card-title">الوحدة ٥ · دليل استخدام الداشبورد</div>
@@ -6363,18 +6500,106 @@ const CE = window.CANDLE_ENGINE = {
       ctx.fillText(pv.toFixed(0), W - M.right + 4, y + 3);
     }
 
-    // ── EMA lines
-    const ema9  = this._ema(data.map(c => c.c), 9);
-    const ema21 = this._ema(data.map(c => c.c), 21);
-    this._drawLine(ctx, toX, toY, ema9,  'rgba(0,191,255,0.75)',   1.5);
-    this._drawLine(ctx, toX, toY, ema21, 'rgba(179,136,255,0.75)', 1.5);
+    // ══ INDICATORS ══
+
+    // ── EMA 9 / 21 / 50 / 200
+    const ema9   = this._ema(data.map(c => c.c), 9);
+    const ema21  = this._ema(data.map(c => c.c), 21);
+    const ema50  = this._ema(data.map(c => c.c), 50);
+    const ema200 = this._ema(data.map(c => c.c), 200);
+    this._drawLine(ctx, toX, toY, ema200, 'rgba(255,180,0,0.55)',    1.2); // EMA200 — ذهبي
+    this._drawLine(ctx, toX, toY, ema50,  'rgba(255,100,0,0.65)',    1.2); // EMA50  — برتقالي
+    this._drawLine(ctx, toX, toY, ema21,  'rgba(179,136,255,0.80)',  1.5); // EMA21  — بنفسجي
+    this._drawLine(ctx, toX, toY, ema9,   'rgba(0,191,255,0.85)',    1.5); // EMA9   — أزرق
+
+    // ── Bollinger Bands (period 20, σ×2)
+    const bbMid = this._sma(data.map(c => c.c), 20);
+    const bbStd = this._rollingStd(data.map(c => c.c), 20);
+    const bbU = bbMid.map((v,i) => v != null && bbStd[i] != null ? v + bbStd[i]*2 : null);
+    const bbL = bbMid.map((v,i) => v != null && bbStd[i] != null ? v - bbStd[i]*2 : null);
+    ctx.setLineDash([3, 3]);
+    this._drawLine(ctx, toX, toY, bbU,  'rgba(100,200,255,0.35)', 1);
+    this._drawLine(ctx, toX, toY, bbL,  'rgba(100,200,255,0.35)', 1);
+    this._drawLine(ctx, toX, toY, bbMid,'rgba(100,200,255,0.20)', 1);
+    ctx.setLineDash([]);
+    // BB fill (شفاف)
+    ctx.beginPath();
+    let bFill = false;
+    bbU.forEach((v,i)=>{ if(v==null){bFill=false;return;} if(!bFill){ctx.moveTo(toX(i),toY(v));bFill=true;}else ctx.lineTo(toX(i),toY(v)); });
+    const validBbL = bbL.slice().reverse();
+    validBbL.forEach((v,ri)=>{ const i=bbL.length-1-ri; if(v!=null) ctx.lineTo(toX(i),toY(v)); });
+    ctx.closePath();
+    ctx.fillStyle='rgba(100,200,255,0.04)'; ctx.fill();
 
     // ── VWAP (dashed gold)
     const hasVwap = data.some(c => c.vwap);
     if (hasVwap) {
-      ctx.setLineDash([5, 4]);
-      this._drawLine(ctx, toX, toY, data.map(c => c.vwap || null), 'rgba(232,184,75,0.9)', 1.5);
+      ctx.setLineDash([6, 4]);
+      this._drawLine(ctx, toX, toY, data.map(c => c.vwap || null), 'rgba(232,184,75,0.95)', 2);
       ctx.setLineDash([]);
+    }
+
+    // ── SuperTrend (نقاط فوق/تحت الشمعات)
+    const closes = data.map(c=>c.c), highs=data.map(c=>c.h), lows=data.map(c=>c.l);
+    const st = this._superTrend(closes, highs, lows, 10, 3);
+    st.forEach((s,i)=>{
+      if(s==null) return;
+      const x=toX(i), y=toY(s.val);
+      ctx.fillStyle = s.up ? 'rgba(0,230,118,0.7)' : 'rgba(255,23,68,0.7)';
+      ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI*2); ctx.fill();
+    });
+
+    // ── Fibonacci Levels (من أعلى وأدنى 20 شمعة أخيرة)
+    const fibSlice = data.slice(-20);
+    const fibH = Math.max(...fibSlice.map(c=>c.h));
+    const fibL = Math.min(...fibSlice.map(c=>c.l));
+    const fibR = fibH - fibL;
+    if (fibR > 0) {
+      const fibLevels = [
+        { r: 0.236, col:'rgba(255,220,100,0.45)', lbl:'23.6%' },
+        { r: 0.382, col:'rgba(100,220,255,0.55)', lbl:'38.2%' },
+        { r: 0.500, col:'rgba(180,180,255,0.45)', lbl:'50%'   },
+        { r: 0.618, col:'rgba(100,220,255,0.60)', lbl:'61.8%' },
+        { r: 0.786, col:'rgba(255,180,100,0.45)', lbl:'78.6%' },
+      ];
+      fibLevels.forEach(fl => {
+        const fibVal = fibH - fibR * fl.r;
+        if (fibVal < pMin || fibVal > pMax) return;
+        const fy = toY(fibVal);
+        ctx.strokeStyle = fl.col; ctx.lineWidth = 1;
+        ctx.setLineDash([4,5]);
+        ctx.beginPath(); ctx.moveTo(M.left, fy); ctx.lineTo(W - M.right, fy); ctx.stroke();
+        ctx.setLineDash([]);
+        // تسمية
+        ctx.fillStyle = fl.col; ctx.font='9px "JetBrains Mono",monospace'; ctx.textAlign='right';
+        ctx.fillText('Fib '+fl.lbl, W - M.right - 2, fy - 2);
+      });
+    }
+
+    // ── مناطق الدعم والمقاومة من S (خطوط أفقية ثقيلة مع تسمية)
+    if (window.S) {
+      const srLevels = [];
+      // مقاومات
+      if (S.fibH) srLevels.push({ v: S.fibH, col:'rgba(255,50,80,0.7)',  lbl:'High', type:'res' });
+      if (S.bbU)  srLevels.push({ v: S.bbU,  col:'rgba(100,200,255,0.6)',lbl:'BB↑',  type:'res' });
+      // دعوم
+      if (S.fibL) srLevels.push({ v: S.fibL, col:'rgba(0,200,100,0.7)',  lbl:'Low',  type:'sup' });
+      if (S.bbL)  srLevels.push({ v: S.bbL,  col:'rgba(100,200,255,0.6)',lbl:'BB↓',  type:'sup' });
+      // VWAP لو ما كانت مرسومة
+      if (!hasVwap && S.vwap) srLevels.push({ v:S.vwap, col:'rgba(232,184,75,0.8)', lbl:'VWAP', type:'mid' });
+
+      srLevels.forEach(sr => {
+        if (!sr.v || sr.v < pMin || sr.v > pMax) return;
+        const sy = toY(sr.v);
+        ctx.strokeStyle = sr.col; ctx.lineWidth = 1.2;
+        ctx.setLineDash([6,3]);
+        ctx.beginPath(); ctx.moveTo(M.left, sy); ctx.lineTo(W-M.right, sy); ctx.stroke();
+        ctx.setLineDash([]);
+        // تسمية على اليمين
+        ctx.fillStyle = sr.col;
+        ctx.font = 'bold 8px "JetBrains Mono",monospace'; ctx.textAlign='left';
+        ctx.fillText(sr.lbl+' '+sr.v.toFixed(0), W-M.right+2, sy-2);
+      });
     }
 
     // ── VOLUME BARS
@@ -6482,23 +6707,33 @@ const CE = window.CANDLE_ENGINE = {
       }
     });
 
-    // ── LEGEND (top-left)
+    // ── LEGEND (top-left) — كل المؤشرات
     const legend = [
-      { col: 'rgba(0,191,255,0.85)',   lbl: 'EMA 9',  dash: false },
-      { col: 'rgba(179,136,255,0.85)', lbl: 'EMA 21', dash: false },
-      { col: 'rgba(232,184,75,0.9)',   lbl: 'VWAP',   dash: true  },
+      { col: 'rgba(0,191,255,0.85)',   lbl: 'EMA9',   dash: false },
+      { col: 'rgba(179,136,255,0.85)', lbl: 'EMA21',  dash: false },
+      { col: 'rgba(255,100,0,0.75)',   lbl: 'EMA50',  dash: false },
+      { col: 'rgba(255,180,0,0.70)',   lbl: 'EMA200', dash: false },
+      { col: 'rgba(232,184,75,0.95)',  lbl: 'VWAP',   dash: true  },
+      { col: 'rgba(100,200,255,0.55)', lbl: 'BB',     dash: true  },
+      { col: 'rgba(0,230,118,0.80)',   lbl: 'ST↑',    dash: false, dot: true },
+      { col: 'rgba(255,23,68,0.80)',   lbl: 'ST↓',    dash: false, dot: true },
     ];
     let lx = M.left + 4;
     legend.forEach(item => {
-      ctx.strokeStyle = item.col; ctx.lineWidth = 1.5;
-      ctx.setLineDash(item.dash ? [4, 3] : []);
-      ctx.beginPath(); ctx.moveTo(lx, 9); ctx.lineTo(lx + 18, 9); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(120,140,180,0.8)';
-      ctx.font = '9px "JetBrains Mono", monospace';
+      if (item.dot) {
+        ctx.fillStyle = item.col;
+        ctx.beginPath(); ctx.arc(lx+5, 9, 3, 0, Math.PI*2); ctx.fill();
+      } else {
+        ctx.strokeStyle = item.col; ctx.lineWidth = 1.5;
+        ctx.setLineDash(item.dash ? [4, 3] : []);
+        ctx.beginPath(); ctx.moveTo(lx, 9); ctx.lineTo(lx + 14, 9); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      ctx.fillStyle = 'rgba(140,160,200,0.85)';
+      ctx.font = '8.5px "JetBrains Mono", monospace';
       ctx.textAlign = 'left';
-      ctx.fillText(item.lbl, lx + 22, 13);
-      lx += 58;
+      ctx.fillText(item.lbl, lx + 18, 13);
+      lx += 46;
     });
   },
 
@@ -6511,6 +6746,50 @@ const CE = window.CANDLE_ENGINE = {
       else ctx.lineTo(toX(i), toY(v));
     });
     ctx.stroke();
+  },
+
+  _sma(arr, period) {
+    return arr.map((_, i) => {
+      if (i < period - 1) return null;
+      return arr.slice(i - period + 1, i + 1).reduce((s,v) => s+v, 0) / period;
+    });
+  },
+
+  _rollingStd(arr, period) {
+    return arr.map((_, i) => {
+      if (i < period - 1) return null;
+      const sl = arr.slice(i - period + 1, i + 1);
+      const m  = sl.reduce((s,v)=>s+v,0) / period;
+      return Math.sqrt(sl.reduce((s,v)=>s+(v-m)**2,0) / period);
+    });
+  },
+
+  _superTrend(closes, highs, lows, period, mult) {
+    // ATR + SuperTrend
+    const n = closes.length;
+    const atr = new Array(n).fill(null);
+    for (let i = 1; i < n; i++) {
+      const tr = Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
+      atr[i] = i < period ? tr : (atr[i-1] * (period-1) + tr) / period;
+    }
+    const result = new Array(n).fill(null);
+    let upTrend = true;
+    let upperB = 0, lowerB = 0;
+    for (let i = period; i < n; i++) {
+      if (!atr[i]) continue;
+      const hl2   = (highs[i] + lows[i]) / 2;
+      const bUp   = hl2 + mult * atr[i];
+      const bDown = hl2 - mult * atr[i];
+      if (i === period) { upperB = bUp; lowerB = bDown; }
+      else {
+        lowerB = closes[i-1] > lowerB ? Math.max(bDown, lowerB) : bDown;
+        upperB = closes[i-1] < upperB ? Math.min(bUp,  upperB)  : bUp;
+      }
+      if (closes[i] > upperB)      upTrend = true;
+      else if (closes[i] < lowerB) upTrend = false;
+      result[i] = { val: upTrend ? lowerB : upperB, up: upTrend };
+    }
+    return result;
   },
 
   _drawEmpty(W, H) {
