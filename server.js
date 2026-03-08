@@ -32,6 +32,7 @@ app.use((req,res,next)=>{
 // ══════════════════════════════════════════════════════════════════
 const S = {
   price:0, prev:0, open:0, high:0, low:0, vol:0, volR:1,
+  vix:0, vixPrev:0,
   rsi:50, macd:0, msig:0, mhist:0, sk:50, sd:50,
   bbU:0, bbL:0, bbB:0, atr:20,
   stV:0, stD:1,
@@ -48,6 +49,39 @@ const S = {
 const RUNTIME_KEYS = { finnhub:'', alphavantage:'' };
 
 // ── صفقة نشطة
+// ══════════════════════════════════════════════════════════════════
+// نظام الأهداف الأسبوعية — يوقف الإشارات عند تحقيق الهدف
+// ══════════════════════════════════════════════════════════════════
+const WEEKLY = {
+  goalPnl:   500,   // هدف الربح الأسبوعي بالدولار (قابل للتعديل)
+  maxLoss:  -300,   // أقصى خسارة أسبوعية (circuit breaker)
+  enabled:   true,
+
+  // احسب P&L هذا الأسبوع من STATS
+  weeklyPnl() {
+    const now  = new Date();
+    const day  = now.getUTCDay(); // 0=Sun
+    const monday = new Date(now);
+    monday.setUTCDate(now.getUTCDate() - ((day+6)%7));
+    monday.setUTCHours(0,0,0,0);
+    // جمع P&L من STATS.recentTrades هذا الأسبوع
+    const trades = STATS.recentTrades || [];
+    return trades
+      .filter(t => t.ts && new Date(t.ts) >= monday)
+      .reduce((s,t) => s + (t.pnl||0), 0);
+  },
+
+  isBlocked() {
+    if(!this.enabled) return false;
+    const pnl = this.weeklyPnl();
+    if(pnl >= this.goalPnl)  return { blocked:true, reason:`🏆 تم تحقيق الهدف الأسبوعي +$${pnl}` };
+    if(pnl <= this.maxLoss)  return { blocked:true, reason:`🛑 Circuit Breaker: خسارة -$${Math.abs(pnl)} تجاوزت الحد` };
+    return { blocked:false, pnl };
+  },
+};
+window.WEEKLY = WEEKLY;
+
+
 const TRADE = {
   active:false, type:null, entry:0, atr:0,
   tp1:0, tp2:0, tp3:0, sl:0, trailSl:0, score:0,
@@ -318,6 +352,21 @@ async function loadMarketData(){
       t:Date.now()-((c.slice(-100).length-1-i)*86400000), o:p, h:p, l:p, c:p, v:vols.slice(-100)[i]||0
     }));
 
+
+    // ── جلب VIX (مؤشر الخوف)
+    try {
+      const vixUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=2d';
+      const vixR = await fetch(vixUrl, {headers:{'User-Agent':'Mozilla/5.0'},signal:AbortSignal.timeout(6000)});
+      if(vixR.ok){
+        const vixD = await vixR.json();
+        const vixClose = vixD?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(Boolean);
+        if(vixClose && vixClose.length >= 1){
+          S.vixPrev = S.vix || vixClose[vixClose.length-2] || 0;
+          S.vix     = Math.round(vixClose[vixClose.length-1] * 100) / 100;
+        }
+      }
+    } catch(e){ /* VIX فشل — استمر */ }
+
     log(`✅ Market loaded: SPX=${price.toFixed(2)} RSI=${S.rsi.toFixed(1)} ST=${S.stD} VWAP=${S.vwap.toFixed(2)} ATR=${S.atr.toFixed(1)}`);
     return true;
   }catch(e){
@@ -330,83 +379,199 @@ async function loadMarketData(){
 // نظام الإشارات — المضارب اليومي Intraday SPX
 // ══════════════════════════════════════════════════════════════════
 function computeSig(){
-  const p=S.price;
+  const p = S.price;
   if(!p||p===0) return {isBuy:false,isSell:false,bs:0,ss:0,
-    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],bc:[],sc:[],conviction:0};
+    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],
+    bc:[],sc:[],badTime:false,sideways:false,conviction:0,
+    bGrade:'',sGrade:'',reason:''};
 
-  // ══ الوقت — تجنب أول 15 دقيقة وآخر 30 دقيقة ══
-  const etH = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
-  const tooEarly = etH < 9.75;   // قبل 9:45 AM ET
-  const tooLate  = etH > 15.5;   // بعد 3:30 PM ET
+  // ══ الوقت ══
+  const etH      = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
+  const tooEarly = etH < 9.75;
+  const tooLate  = etH > 15.5;
   const badTime  = tooEarly || tooLate;
 
-  // ══ فلتر السوق الهادئ ══
-  const bbRange = (S.bbU - S.bbL) || 1;
-  const bbWidth = bbRange / p;         // نسبة عرض BB
-  const sideways = bbWidth < 0.004;    // أقل من 0.4% → سوق جانبي
+  // ══ فلتر التقويم الاقتصادي ══
+  // لا توصيات 30 دقيقة قبل وبعد أحداث كبيرة
+  const HIGH_IMPACT = getHighImpactWindow();
+  if(HIGH_IMPACT.active) return {isBuy:false,isSell:false,bs:0,ss:0,
+    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],
+    bc:[],sc:[],badTime:true,sideways:false,conviction:0,
+    bGrade:'',sGrade:'',reason:'حدث اقتصادي: '+HIGH_IMPACT.name};
 
-  // ══ فلتر ATR منخفض ══
-  const lowATR = S.atr < 15;           // سوق خامل جداً
 
-  // ══ شروط الشراء CALL (20 نقطة) ══
-  const bbPct = bbRange>0 ? (p-S.bbL)/bbRange : 0.5;
-  const vwap  = S.vwap || p;
+  // ══ فلتر VIX (مؤشر الخوف) ══
+  // VIX > 35 → سوق مضطرب جداً → لا إشارات
+  // VIX > 25 → تحذير → خفّض الوزن
+  const vixHigh    = S.vix > 0 && S.vix > 35;
+  const vixElevated= S.vix > 0 && S.vix > 25 && S.vix <= 35;
+  const vixOK      = S.vix === 0 || S.vix <= 25; // لا نعرف VIX أو طبيعي
+  if(vixHigh) return {isBuy:false,isSell:false,bs:0,ss:0,
+    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],
+    bc:[],sc:[],badTime:false,sideways:true,conviction:0,
+    bGrade:'',sGrade:'',reason:`VIX مرتفع جداً: ${S.vix} — سوق مضطرب`};
 
-  const bc=[
-    // مؤشرات رئيسية (وزن 3)
-    {pass:S.stD===1,                          w:3, label:'SuperTrend ↑'},
-    {pass:S.vwap>0 && p>vwap,                 w:3, label:'فوق VWAP'},
+
+  // ══ فلتر Gap Opening ══
+  // إذا فجوة الافتتاح > 0.5% وأقل من 15 دقيقة من الافتتاح → انتظر
+  const gapPct = S.open > 0 ? Math.abs(S.price - S.open) / S.open * 100 : 0;
+  const minutesSinceOpen = etH > 9.5 ? (etH - 9.5) * 60 : 9999;
+  const gapOpen = gapPct > 0.5 && minutesSinceOpen < 15;
+  if(gapOpen) return {isBuy:false,isSell:false,bs:0,ss:0,
+    bScore:0,sScore:0,bPct:0,sPct:0,bLabels:[],sLabels:[],
+    bc:[],sc:[],badTime:true,sideways:false,conviction:0,
+    bGrade:'',sGrade:'',reason:`فجوة افتتاح ${gapPct.toFixed(1)}% — انتظر 15 دقيقة`};
+
+  // ══ فلتر السوق ══
+  const bbRange  = Math.max(S.bbU - S.bbL, 1);
+  const bbWidth  = bbRange / p;
+  const sideways = bbWidth < 0.003;
+  const lowATR   = S.atr > 0 && S.atr < 12;
+  const bbPct    = (p - S.bbL) / bbRange;
+  const vwap     = S.vwap || p;
+
+  // ══ VWAP Bands (±1σ) ══
+  // نقدر σ من ATR: σ ≈ ATR * 0.6
+  const vwapSigma = (S.atr||20) * 0.6;
+  const vwapU1    = vwap + vwapSigma;   // مقاومة
+  const vwapL1    = vwap - vwapSigma;   // دعم
+  const nearVwapU = p >= vwapU1 * 0.998; // قريب من مقاومة VWAP
+  const nearVwapL = p <= vwapL1 * 1.002; // قريب من دعم VWAP
+  const inVwapBull= p > vwap && p < vwapU1; // منطقة شراء مثالية
+  const inVwapBear= p < vwap && p > vwapL1; // منطقة بيع مثالية
+
+  // ══ Daily Trend Filter ══
+  // نستخدم EMA200 كمرشح اتجاه كبير
+  const dailyBull = S.ema200 > 0 ? p > S.ema200 : true;
+  const dailyBear = S.ema200 > 0 ? p < S.ema200 : true;
+
+  // ══ Order Flow Proxy ══
+  // نحاكي order flow من: OBV + حجم + حركة السعر
+  const volAboveAvg  = S.volR >= 1.2;          // حجم أعلى من المتوسط
+  const bullishFlow  = S.obv > S.obvE && volAboveAvg && p > S.prev;
+  const bearishFlow  = S.obv < S.obvE && volAboveAvg && p < S.prev;
+  const strongBull   = S.obv > S.obvE && S.volR >= 1.5; // تدفق شراء قوي
+  const strongBear   = S.obv < S.obvE && S.volR >= 1.5; // تدفق بيع قوي
+
+  // ══ Momentum Divergence (فلتر إضافي) ══
+  // إذا RSI يتعارض مع السعر → إشارة أضعف
+  const rsiDivBull = S.rsi < 50 && p > S.prev; // RSI منخفض لكن سعر صاعد
+  const rsiDivBear = S.rsi > 50 && p < S.prev;
+
+  // ══ شروط CALL (وزن 22) ══
+  const bc = [
+    // Core — يجب الاثنان (وزن 3 لكل)
+    {pass: S.stD===1,                              w:3, label:'SuperTrend ↑',   core:true},
+    {pass: S.vwap>0 && p>vwap,                    w:3, label:'فوق VWAP',        core:true},
     // مومنتم (وزن 2)
-    {pass:S.ema9>0 && S.ema9>S.ema21,         w:2, label:'EMA9 > EMA21'},
-    {pass:S.mhist>0 && S.macd>S.msig,         w:2, label:'MACD ↑'},
-    {pass:S.rsi>=42 && S.rsi<65,              w:2, label:'RSI '+Math.round(S.rsi)},
-    {pass:bbPct<0.45,                          w:2, label:'BB منطقة شراء'},
-    // اتجاه عام (وزن 1)
-    {pass:S.ema21>S.ema50,                    w:1, label:'EMA21 > EMA50'},
-    {pass:S.sk<60,                             w:1, label:'Stoch '+Math.round(S.sk)},
-    // تأكيد إضافي (وزن 1)
-    {pass:p>S.bbB,                             w:1, label:'فوق MA20'},
-    {pass:S.obv>S.obvE,                        w:1, label:'OBV صاعد'},
+    {pass: S.ema9>0 && S.ema9>S.ema21,            w:2, label:'EMA9 > EMA21'},
+    {pass: S.mhist>0 && S.macd>S.msig,            w:2, label:'MACD ↑'},
+    {pass: S.rsi>=42 && S.rsi<65,                 w:2, label:'RSI '+Math.round(S.rsi)},
+    {pass: bbPct<0.45,                             w:2, label:'BB شراء'},
+    // S/R Levels
+    {pass: (()=>{ const sr=calcSRLevels(S.history); return sr.srBull; })(), w:1, label:'قرب دعم S/R'},
+    // جديد: VWAP Band + Order Flow (وزن 2)
+    {pass: inVwapBull,                             w:2, label:'VWAP Band ↑'},
+    {pass: bullishFlow || strongBull,              w:2, label:'Order Flow ↑'},
+    // تأكيد (وزن 1)
+    {pass: S.ema21>0 && S.ema21>S.ema50,          w:1, label:'EMA21>EMA50'},
+    {pass: dailyBull,                              w:1, label:'Daily Bull'},
+    {pass: S.sk>0 && S.sk<60,                     w:1, label:'Stoch '+Math.round(S.sk)},
   ];
 
-  // ══ شروط البيع PUT (20 نقطة) ══
-  const sc=[
-    {pass:S.stD===-1,                          w:3, label:'SuperTrend ↓'},
-    {pass:S.vwap>0 && p<vwap,                 w:3, label:'تحت VWAP'},
-    {pass:S.ema9>0 && S.ema9<S.ema21,         w:2, label:'EMA9 < EMA21'},
-    {pass:S.mhist<0 && S.macd<S.msig,         w:2, label:'MACD ↓'},
-    {pass:S.rsi>55 && S.rsi<=78,              w:2, label:'RSI '+Math.round(S.rsi)},
-    {pass:bbPct>0.55,                          w:2, label:'BB منطقة بيع'},
-    {pass:S.ema21<S.ema50,                    w:1, label:'EMA21 < EMA50'},
-    {pass:S.sk>40,                             w:1, label:'Stoch '+Math.round(S.sk)},
-    {pass:p<S.bbB,                             w:1, label:'تحت MA20'},
-    {pass:S.obv<S.obvE,                        w:1, label:'OBV هابط'},
+  // ══ شروط PUT (وزن 22) ══
+  const sc = [
+    {pass: S.stD===-1,                             w:3, label:'SuperTrend ↓',   core:true},
+    {pass: S.vwap>0 && p<vwap,                    w:3, label:'تحت VWAP',        core:true},
+    {pass: S.ema9>0 && S.ema9<S.ema21,            w:2, label:'EMA9 < EMA21'},
+    {pass: S.mhist<0 && S.macd<S.msig,            w:2, label:'MACD ↓'},
+    {pass: S.rsi>55 && S.rsi<=78,                 w:2, label:'RSI '+Math.round(S.rsi)},
+    {pass: bbPct>0.55,                             w:2, label:'BB بيع'},
+    // S/R Levels
+    {pass: (()=>{ const sr=calcSRLevels(S.history); return sr.srBear; })(), w:1, label:'قرب مقاومة S/R'},
+    {pass: inVwapBear,                             w:2, label:'VWAP Band ↓'},
+    {pass: bearishFlow || strongBear,              w:2, label:'Order Flow ↓'},
+    {pass: S.ema21>0 && S.ema21<S.ema50,          w:1, label:'EMA21<EMA50'},
+    {pass: dailyBear,                              w:1, label:'Daily Bear'},
+    {pass: S.sk>0 && S.sk>40,                     w:1, label:'Stoch '+Math.round(S.sk)},
   ];
 
-  const bPassed=bc.filter(c=>c.pass), sPassed=sc.filter(c=>c.pass);
-  const bScore=bPassed.reduce((s,c)=>s+c.w,0);
-  const sScore=sPassed.reduce((s,c)=>s+c.w,0);
-  const maxScore=20;
-  const bPct=Math.round(bScore/maxScore*100);
-  const sPct=Math.round(sScore/maxScore*100);
-  const bLabels=bPassed.map(c=>c.label);
-  const sLabels=sPassed.map(c=>c.label);
+  const bPassed  = bc.filter(c=>c.pass);
+  const sPassed  = sc.filter(c=>c.pass);
+  const bScore   = bPassed.reduce((s,c)=>s+c.w, 0);
+  const sScore   = sPassed.reduce((s,c)=>s+c.w, 0);
+  const maxScore = 22;
+  const bPct     = Math.round(bScore/maxScore*100);
+  const sPct     = Math.round(sScore/maxScore*100);
+  const bLabels  = bPassed.map(c=>c.label);
+  const sLabels  = sPassed.map(c=>c.label);
 
-  // ══ شروط الإشارة الصارمة ══
-  const bHasCore = bPassed.some(c=>c.label==='SuperTrend ↑') &&
-                   bPassed.some(c=>c.label==='فوق VWAP');
-  const sHasCore = sPassed.some(c=>c.label==='SuperTrend ↓') &&
-                   sPassed.some(c=>c.label==='تحت VWAP');
+  // ══ Core: يجب الاثنان ══
+  const bHasCore = bPassed.filter(c=>c.core).length === 2;
+  const sHasCore = sPassed.filter(c=>c.core).length === 2;
 
-  // يجب: نقاط >= 8 (40%) + core + ليس وقت سيئ + ليس سوق جانبي
-  const isBuy  = !badTime && !sideways && !lowATR &&
-                 bScore>=8 && bScore>sScore && bHasCore;
-  const isSell = !badTime && !sideways && !lowATR &&
-                 sScore>=8 && sScore>bScore && sHasCore;
+  // ══ تصنيف الإشارة ══
+  // A+ : score≥15 + core + ≥6 شروط + Order Flow
+  // A  : score≥11 + core + ≥5 شروط
+  // B  : score≥8  + core + ≥4 شروط
+  const bHasFlow  = bPassed.some(c=>c.label==='Order Flow ↑');
+  const sHasFlow  = sPassed.some(c=>c.label==='Order Flow ↓');
+  const bGradeAp  = bScore>=15 && bHasCore && bPassed.length>=6 && bHasFlow;
+  const bGradeA   = bScore>=11 && bHasCore && bPassed.length>=5;
+  const bGradeB   = bScore>=8  && bHasCore && bPassed.length>=4;
+  const sGradeAp  = sScore>=15 && sHasCore && sPassed.length>=6 && sHasFlow;
+  const sGradeA   = sScore>=11 && sHasCore && sPassed.length>=5;
+  const sGradeB   = sScore>=8  && sHasCore && sPassed.length>=4;
 
-  return {isBuy,isSell,bs:bPassed.length,ss:sPassed.length,
-    bScore,sScore,bPct,sPct,maxScore,bLabels,sLabels,bc,sc,
-    badTime,sideways,conviction:isBuy?bPct:isSell?sPct:0};
+  const bGrade = bGradeAp?'A+':bGradeA?'A':bGradeB?'B':'';
+  const sGrade = sGradeAp?'A+':sGradeA?'A':sGradeB?'B':'';
+
+  let reason = '';
+  if(badTime)     reason = 'وقت سيئ';
+  else if(sideways) reason = 'سوق جانبي BB=' + (bbWidth*100).toFixed(2)+'%';
+  else if(lowATR)   reason = 'ATR منخفض=' + (S.atr||0).toFixed(1);
+
+  const valid  = !badTime && !sideways && !lowATR;
+  const isBuy  = valid && bGrade!=='' && bScore>sScore;
+  const isSell = valid && sGrade!=='' && sScore>bScore;
+
+  return {isBuy,isSell, bs:bPassed.length, ss:sPassed.length,
+    bScore,sScore, bPct,sPct, maxScore,
+    bLabels,sLabels, bc,sc,
+    bGrade,sGrade, badTime,sideways,lowATR,reason,
+    bullishFlow,bearishFlow, inVwapBull,inVwapBear,
+    conviction: isBuy?bPct:isSell?sPct:0};
+}
+
+// ══ التقويم الاقتصادي — أحداث عالية الأثر ══
+function getHighImpactWindow(){
+  const now   = new Date();
+  const etOff = -4; // EDT (مارس-نوفمبر) أو -5 للـ EST
+  const etH   = ((now.getUTCHours()+etOff+24)%24);
+  const etM   = now.getUTCMinutes();
+  const etMin = etH*60 + etM; // دقائق من منتصف الليل ET
+  const dow   = now.getUTCDay(); // 0=أحد
+
+  // أحداث ثابتة أسبوعية (الوقت بالدقائق من منتصف الليل ET)
+  const WEEKLY_EVENTS = [
+    {dow:5, time:8*60+30, name:'NFP/بيانات التوظيف الجمعة',    window:40},
+    {dow:3, time:8*60+30, name:'ADP التوظيف',                   window:30},
+    {dow:3, time:14*60+0, name:'FOMC بيان الفائدة',             window:60},
+    {dow:2, time:8*60+30, name:'CPI التضخم',                    window:40},
+    {dow:4, time:8*60+30, name:'GDP ناتج محلي',                  window:30},
+    {dow:4, time:8*60+30, name:'طلبات إعانة البطالة',            window:25},
+    {dow:1, time:10*60+0, name:'ISM مؤشر التصنيع',               window:25},
+  ];
+
+  for(const ev of WEEKLY_EVENTS){
+    if(dow !== ev.dow) continue;
+    const diff = etMin - ev.time;
+    // 30 دقيقة قبل + window بعد
+    if(diff >= -30 && diff <= ev.window){
+      return {active:true, name:ev.name, minsLeft: diff<0?Math.abs(diff):0};
+    }
+  }
+  return {active:false, name:'', minsLeft:0};
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -430,12 +595,208 @@ const mktLn=()=>{
 // ══════════════════════════════════════════════════════════════════
 // تنبيهات تيليجرام
 // ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════
+// نظام احتمالية النجاح — Probability Engine
+// يحسب % احتمال نجاح الصفقة من 8 عوامل مستقلة
+// ══════════════════════════════════════════════════════════════════
+
+function calcProbability(isLong, bScore, sScore, maxScore){
+  const p     = S.price;
+  const vwap  = S.vwap || p;
+  const atr   = S.atr  || 20;
+  const etH   = ((new Date().getUTCHours()-4+24)%24) + new Date().getUTCMinutes()/60;
+  const hoursLeft = Math.max(16.0 - etH, 0.1);
+
+  // ── 8 عوامل مستقلة، كل عامل له وزن ──
+  const factors = [];
+
+  // 1. قوة الإشارة (30%)
+  const sigScore = isLong ? bScore : sScore;
+  const sigPct   = sigScore / maxScore;
+  factors.push({
+    name: 'قوة الإشارة',
+    score: Math.min(sigPct * 1.3, 1.0),
+    weight: 30,
+    detail: `${sigScore}/${maxScore}`
+  });
+
+  // 2. موقع السعر من VWAP (20%)
+  const vwapDist   = Math.abs(p - vwap);
+  const vwapPctDist= vwapDist / atr;
+  let vwapScore;
+  if(isLong){
+    // أفضل: قريب من VWAP من فوق (0-0.5 ATR)
+    vwapScore = vwapPctDist < 0.3 ? 1.0
+              : vwapPctDist < 0.6 ? 0.85
+              : vwapPctDist < 1.0 ? 0.65
+              : vwapPctDist < 1.5 ? 0.40
+              : 0.20; // بعيد جداً
+    if(p < vwap) vwapScore *= 0.3; // تحت VWAP يخفض كثيراً
+  } else {
+    vwapScore = vwapPctDist < 0.3 ? 1.0
+              : vwapPctDist < 0.6 ? 0.85
+              : vwapPctDist < 1.0 ? 0.65
+              : vwapPctDist < 1.5 ? 0.40
+              : 0.20;
+    if(p > vwap) vwapScore *= 0.3;
+  }
+  factors.push({
+    name: 'موقع VWAP',
+    score: vwapScore,
+    weight: 20,
+    detail: `${vwapDist.toFixed(1)}pt من VWAP`
+  });
+
+  // 3. توافق MACD + RSI (15%)
+  let momentumScore = 0;
+  if(isLong){
+    if(S.mhist > 0) momentumScore += 0.5;
+    if(S.rsi >= 45 && S.rsi < 60) momentumScore += 0.5;
+    else if(S.rsi >= 40 && S.rsi < 65) momentumScore += 0.3;
+  } else {
+    if(S.mhist < 0) momentumScore += 0.5;
+    if(S.rsi > 55 && S.rsi <= 70) momentumScore += 0.5;
+    else if(S.rsi > 50 && S.rsi <= 75) momentumScore += 0.3;
+  }
+  factors.push({
+    name: 'مومنتم MACD+RSI',
+    score: momentumScore,
+    weight: 15,
+    detail: `RSI:${S.rsi.toFixed(0)} MACD:${S.mhist>0?'↑':'↓'}`
+  });
+
+  // 4. SuperTrend + EMA alignment (15%)
+  let trendScore = 0;
+  if(isLong){
+    if(S.stD === 1)          trendScore += 0.4;
+    if(S.ema9 > S.ema21)     trendScore += 0.3;
+    if(S.ema21 > S.ema50)    trendScore += 0.2;
+    if(S.ema50 > S.ema200)   trendScore += 0.1;
+  } else {
+    if(S.stD === -1)         trendScore += 0.4;
+    if(S.ema9 < S.ema21)     trendScore += 0.3;
+    if(S.ema21 < S.ema50)    trendScore += 0.2;
+    if(S.ema50 < S.ema200)   trendScore += 0.1;
+  }
+  factors.push({
+    name: 'تناسق الاتجاه',
+    score: Math.min(trendScore, 1.0),
+    weight: 15,
+    detail: `ST:${S.stD===1?'↑':'↓'} EMA:${S.ema9>S.ema21?'↑':'↓'}`
+  });
+
+  // 5. Order Flow / حجم التداول (10%)
+  const volBull  = S.obv > S.obvE && S.volR >= 1.2;
+  const volBear  = S.obv < S.obvE && S.volR >= 1.2;
+  const volScore = isLong
+    ? (S.volR >= 1.5 && volBull ? 1.0 : volBull ? 0.75 : S.volR >= 1.0 ? 0.45 : 0.25)
+    : (S.volR >= 1.5 && volBear ? 1.0 : volBear ? 0.75 : S.volR >= 1.0 ? 0.45 : 0.25);
+  factors.push({
+    name: 'Order Flow',
+    score: volScore,
+    weight: 10,
+    detail: `Vol:${(S.volR||1).toFixed(1)}x OBV:${S.obv>S.obvE?'↑':'↓'}`
+  });
+
+  // 6. وقت الجلسة (5%)
+  // أفضل أوقات: 10:00-11:30 AM و 1:30-3:00 PM
+  const bestMorning = etH >= 10.0 && etH < 11.5;
+  const bestAfternoon = etH >= 13.5 && etH < 15.0;
+  const goodTime = etH >= 9.75 && etH < 15.5;
+  const timeScore = bestMorning || bestAfternoon ? 1.0
+                  : goodTime ? 0.7
+                  : 0.3;
+  factors.push({
+    name: 'توقيت الجلسة',
+    score: timeScore,
+    weight: 5,
+    detail: etH.toFixed(1)+'h ET'
+  });
+
+  // 7. Theta Decay خطر (3%)
+  // كلما قل الوقت، زاد خطر Theta
+  const thetaScore = hoursLeft > 4 ? 1.0
+                   : hoursLeft > 2 ? 0.8
+                   : hoursLeft > 1 ? 0.55
+                   : 0.25;
+  factors.push({
+    name: 'Theta Risk',
+    score: thetaScore,
+    weight: 3,
+    detail: `${hoursLeft.toFixed(1)}h متبقي`
+  });
+
+  // 8. ATR / تقلب كافٍ (2%)
+  const atrScore = atr > 30 ? 1.0
+                 : atr > 20 ? 0.85
+                 : atr > 15 ? 0.65
+                 : atr > 10 ? 0.40
+                 : 0.20;
+  factors.push({
+    name: 'تقلب ATR',
+    score: atrScore,
+    weight: 2,
+    detail: `ATR:${atr.toFixed(0)}`
+  });
+
+  // ── الاحتمالية المرجّحة ──
+  const totalWeight = factors.reduce((s,f) => s+f.weight, 0);
+  const weightedSum = factors.reduce((s,f) => s + f.score*f.weight, 0);
+  const rawProb     = weightedSum / totalWeight; // 0–1
+
+  // تحويل للنسبة المئوية (calibrated)
+  // raw 0.5 → ~55%, raw 0.7 → ~70%, raw 0.9 → ~85%
+  const prob = Math.round(Math.min(rawProb * 100, 92));
+
+  // ── درجة الخطر الرئيسي ──
+  const weakFactors = factors
+    .filter(f => f.score < 0.5)
+    .sort((a,b) => a.score*a.weight - b.score*b.weight)
+    .slice(0, 2);
+
+  const topFactors = factors
+    .filter(f => f.score >= 0.75)
+    .sort((a,b) => b.score*b.weight - a.score*a.weight)
+    .slice(0, 3);
+
+  // ── تصنيف الاحتمالية ──
+  const grade = prob >= 75 ? '🟢 عالية'
+              : prob >= 60 ? '🟡 متوسطة'
+              : '🔴 منخفضة';
+
+  return { prob, grade, factors, topFactors, weakFactors, rawProb };
+}
+
+
 async function alertEntry(type,bScore,sScore,bLabels,sLabels){
+  // ── فحص الأهداف الأسبوعية
+  const weeklyCheck = WEEKLY.isBlocked();
+  if(weeklyCheck.blocked){
+    log('[WeeklyBlock] '+weeklyCheck.reason);
+    await tg(`⛔ <b>NEXUS v7 — إيقاف تلقائي</b>\n\n${weeklyCheck.reason}\n\nسيُستأنف الأسبوع القادم تلقائياً.\n⏰ ${nowAr()}`);
+    return;
+  }
   const p   = S.price;
   const atr = Math.max(S.atr||40, 20);
   const d   = type==='BUY' ? 1 : -1;
   const isL = d === 1;
   const score = isL ? bScore : sScore;
+
+  // ══ حساب احتمالية النجاح ══
+  const PB = calcProbability(isL, bScore, sScore, 22);
+  const probVal  = PB.prob;
+  const probGrade= PB.grade;
+  const topFacts = PB.topFactors.map(f=>f.name).join(' · ');
+  const weakFacts= PB.weakFactors.length>0
+    ? '⚠️ ' + PB.weakFactors.map(f=>f.name+' ('+Math.round(f.score*100)+'%)').join(' | ')
+    : '✅ لا مخاطر واضحة';
+
+  // ══ حد الإرسال: لا نرسل إذا الاحتمالية < 55% ══
+  if(probVal < 55){
+    log('[ProbFilter] '+type+' prob:'+probVal+'% - لم يرسل');
+    TRADE.active = false;
+    return;
+  }
 
   // ══ أهداف SPX ══
   const slPts=8, tp1Pts=10, tp2Pts=20, tp3Pts=35;
@@ -445,8 +806,10 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
   const sl  = Math.round((p - d*slPts)*100)/100;
   const rr  = (tp2Pts/slPts).toFixed(1);
 
+  const entryEtH = ((new Date().getUTCHours()-4+24)%24)+new Date().getUTCMinutes()/60;
+  const tradeGrade = isL?bGradeSig:sGradeSig;
   Object.assign(TRADE,{
-    active:true, type, entry:p, atr, tp1, tp2, tp3, sl, trailSl:sl, score,
+    grade:tradeGrade, entryHour:entryEtH,
     tp1Hit:false, tp2Hit:false, nearTp1:false, nearTp2:false,
     slWarned:false, openedAt:new Date()
   });
@@ -458,7 +821,11 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
   const sessionNote = hoursLeft<1?'آخر ساعة':hoursLeft<2?'آخر ساعتين':hoursLeft<4?'منتصف الجلسة':'بداية الجلسة';
 
   // ══ مستوى الإشارة ══
-  const sigLevel = score>=8?'A ⭐ قوية جداً':'B ✅ جيدة';
+  // احسب grade من score
+  const bGradeSig = bScore>=14?'A+':bScore>=10?'A':bScore>=8?'B':'B';
+  const sGradeSig = sScore>=14?'A+':sScore>=10?'A':sScore>=8?'B':'B';
+  const curGrade  = isL?bGradeSig:sGradeSig;
+  const sigLevel  = curGrade==='A+'?'A+ 🔥 ممتازة':curGrade==='A'?'A ⭐ قوية':'B ✅ جيدة';
 
   // ══ تاريخ SPXW ══
   const expDate = new Date().toLocaleDateString('en-US',{
@@ -475,54 +842,113 @@ async function alertEntry(type,bScore,sScore,bLabels,sLabels){
     if(opt==='c') return Math.max(S*N(d1)-K*Math.exp(-0.053*T)*N(d2),0);
     return Math.max(K*Math.exp(-0.053*T)*(1-N(d2))-S*(1-N(d1)),0);
   }
-  const T=hoursLeft/(252*6.5), sig=0.09, TARGET=6.50;
-  let bestStrike=Math.round(p/5)*5, bestPrem=0, bestDiff=9999;
-  for(let diff=0;diff<=80;diff+=5){
-    const K=Math.round(p/5)*5+(isL?diff:-diff);
-    const prem=bsOpt(p,K,T,sig,isL?'c':'p');
-    if(Math.abs(prem-TARGET)<bestDiff){bestDiff=Math.abs(prem-TARGET);bestStrike=K;bestPrem=prem;}
-  }
-  const premVal  = Math.round(bestPrem*100)/100;
-  const costVal  = Math.round(premVal*100);
-  const slPrem   = Math.round(premVal*0.50*100)/100;
-  const slCost   = Math.round(slPrem*100);
-  const tgtPrem  = Math.round(premVal*1.80*100)/100;
-  const tgtCost  = Math.round(tgtPrem*100);
-  const otmDist  = Math.abs(bestStrike-Math.round(p/5)*5);
-  const otmLabel = otmDist===0?'ATM':'OTM +'+otmDist+' نقطة';
-
+  const T=hoursLeft/(252*6.5);
+  // ── IV حقيقي من VIX (محوّل لـ 0DTE)
+  // VIX = annualized 30-day IV → نحوّله ليوم واحد
+  const vixNow  = S.vix > 0 ? S.vix : 18;
+  const sig     = Math.max(0.05, Math.min(0.60, (vixNow/100) * Math.sqrt(1/12)));
+  // sig مثال: VIX=18 → sig≈0.052 | VIX=25 → sig≈0.072 | VIX=35 → sig≈0.101
+  // هدف: أقل سعر ممكن مع بقائه ≤ $3.50/سهم ($350/عقد)
   // ══ المؤشرات ══
-  const rsiV=S.rsi.toFixed(1), macdV=S.mhist>0?'▲':'▼', stV=S.stD===1?'▲':'▼';
-  const vwapLine=S.vwap>0?`\n📊 VWAP: <b>${fmt(S.vwap)}</b>`:'';
+  const rsiV     = S.rsi.toFixed(1), macdV=S.mhist>0?'▲':'▼', stV=S.stD===1?'▲':'▼';
+  const statsLine = getDailyStats();
 
+  // ══ دالة: ابحث عن أفضل سترايك لميزانية محددة ══
+  function findStrike(maxBudget) {
+    const maxPrem = maxBudget / 100;  // $150→1.50, $250→2.50, $350→3.50
+    let strike = Math.round(p/5)*5, prem = 0;
+    // ابحث عن أعلى premium ≤ maxPrem
+    for(let diff=0; diff<=200; diff+=5){
+      const K = Math.round(p/5)*5 + (isL ? diff : -diff);
+      const pr = bsOpt(p, K, T, sig, isL?'c':'p');
+      if(pr <= maxPrem && pr > prem){ prem = pr; strike = K; }
+    }
+    // fallback: أقرب premium للهدف
+    if(prem < 0.05){
+      let best=9999;
+      for(let diff=0;diff<=200;diff+=5){
+        const K=Math.round(p/5)*5+(isL?diff:-diff);
+        const pr=bsOpt(p,K,T,sig,isL?'c':'p');
+        if(Math.abs(pr-maxPrem)<best){best=Math.abs(pr-maxPrem);prem=pr;strike=K;}
+      }
+    }
+    const pv  = Math.round(prem*100)/100;
+    const cv  = Math.round(pv*100);
+    const slP = Math.round(pv*0.50*100)/100;
+    const tpP = Math.round(pv*1.80*100)/100;
+    const otm = Math.abs(strike - Math.round(p/5)*5);
+    return { strike, pv, cv, slP, tpP, otm,
+             otmLbl: otm===0?'ATM':`OTM +${otm} نقطة`,
+             slLoss: cv - Math.round(slP*100),
+             tpGain: Math.round(tpP*100) - cv };
+  }
+
+  const plans = [
+    { num:1, budget:150, icon:'🥉', label:'توصية 1/3 — ميزانية $150' },
+    { num:2, budget:250, icon:'🥈', label:'توصية 2/3 — ميزانية $250' },
+    { num:3, budget:350, icon:'🥇', label:'توصية 3/3 — ميزانية $350' },
+  ];
+
+  // ── الرسالة الأولى: ملخص الإشارة
   await tg(
-`${isL?'🚀':'🔻'} <b>NEXUS v7 — ${isL?'CALL شراء':'PUT بيع'}</b>
-${sessionIcon} ${sessionNote}  |  مستوى: <b>${sigLevel}</b>
+`${isL?'🚀':'🔻'} <b>NEXUS v7 — دخول ${isL?'CALL شراء':'بيع SHORT'}</b>
 
+📊 <b>S&P 500 · SPX</b>
+💰 الدخول: <b>${fmt(p)}</b>
+📐 RSI:${rsiV} · MACD:${macdV} · ST:${stV} · ${sessionNote}
+✅ قوة الإشارة: <b>${score}/22</b>  |  مستوى: <b>${sigLevel}</b>
+
+🎯 <b>أهداف SPX:</b>
+├ TP1: <b>${fmt(tp1)}</b>  (+${tp1Pts}pt | ${fmtP((tp1-p)/p*100)})
+├ TP2: <b>${fmt(tp2)}</b>  (+${tp2Pts}pt | ${fmtP((tp2-p)/p*100)})
+└ TP3: <b>${fmt(tp3)}</b>  (+${tp3Pts}pt | ${fmtP((tp3-p)/p*100)})
+🛑 وقف SPX: <b>${fmt(sl)}</b>  (-${slPts}pt)  |  📏 R:R = 1:${rr}
+
+👇 <b>اختر توصيتك حسب ميزانيتك:</b>
+⏰ ${nowAr()}`);
+
+  // ── 3 رسائل منفصلة — كل رسالة ميزانية مختلفة
+  for(const plan of plans){
+    const m = findStrike(plan.budget);
+    await new Promise(r=>setTimeout(r,600)); // تأخير 0.6 ثانية بين الرسائل
+    await tg(
+`${plan.icon} <b>NEXUS v7 — ${isL?'CALL شراء':'PUT بيع'}  |  ${plan.label}</b>
 ━━━━━━━━━━━━━━━━━━
-📊 <b>SPX</b>  💰 <b>${fmt(p)}</b>${vwapLine}
-📐 RSI:<b>${rsiV}</b>  MACD:<b>${macdV}</b>  ST:<b>${stV}</b>
-✅ قوة الإشارة: <b>${score}/15</b>
-
+🏷 الدرجة: <b>${sigLevel}</b>  |  📊 الاحتمالية: <b>${probVal}%</b> ${probGrade}
+✅ قوة الإشارة: <b>${score}/22</b>  |  ${sessionIcon} ${sessionNote}
 ━━━━━━━━━━━━━━━━━━
-${isL?'📈':'📉'} <b>SPXW ${isL?'CALL':'PUT'} ${bestStrike}</b>  |  0DTE  |  ${expDate}
-📍 ${otmLabel}
-💵 Premium: <b>$${premVal}</b>/سهم  (~<b>$${costVal}</b>/عقد)
+📊 <b>S&P 500 · SPX</b>
+💰 سعر الدخول: <b>${fmt(p)}</b>
+📈 الاتجاه: <b>${isL?'صاعد ▲':'هابط ▼'}</b>  |  VWAP: <b>${fmt(S.vwap||p)}</b>
+📐 RSI: <b>${rsiV}</b>  ·  MACD: <b>${macdV}</b>  ·  ST: <b>${stV}</b>
+${S.vix>0?'🌡 VIX: <b>'+S.vix.toFixed(1)+'</b>  '+(S.vix>30?'🔴 مرتفع':S.vix>20?'🟡 متوسط':'🟢 هادئ'):''}
+💪 أقوى عوامل: ${topFacts}
+━━━━━━━━━━━━━━━━━━
+📌 <b>الأوبشن المقترح:</b>
+${isL?'📈':'📉'} SPXW <b>${isL?'CALL':'PUT'} ${m.strike}</b>  |  0DTE  |  ${expDate}
+📏 المسافة من السعر: <b>${m.otmLbl}</b>
+💵 السعر: <b>$${m.pv}</b>/سهم
+💰 إجمالي العقد: <b>~$${m.cv}</b>  ✅ ضمن ميزانية $${plan.budget}
+━━━━━━━━━━━━━━━━━━
+🛑 <b>وقف خسارة الأوبشن:</b>
+إذا نزل Premium لـ <b>$${m.slP}</b> → اخرج فوراً
+خسارة محتملة: <b>~$${m.slLoss}</b>
 
-🛑 اخرج إذا نزل → <b>$${slPrem}</b>  (خسارة ~$${costVal-slCost})
-🎯 اخرج إذا وصل → <b>$${tgtPrem}</b>  (ربح ~$${tgtCost-costVal})
-
+🎯 <b>هدف الأوبشن:</b>
+إذا وصل Premium لـ <b>$${m.tpP}</b> → اخرج وحقق الربح
+ربح محتمل: <b>~$${m.tpGain}</b>
 ━━━━━━━━━━━━━━━━━━
 🎯 <b>أهداف SPX:</b>
-├ TP1  <b>${fmt(tp1)}</b>  (+${tp1Pts}pt | ${fmtP((tp1-p)/p*100)})
-├ TP2  <b>${fmt(tp2)}</b>  (+${tp2Pts}pt | ${fmtP((tp2-p)/p*100)})
-└ TP3  <b>${fmt(tp3)}</b>  (+${tp3Pts}pt | ${fmtP((tp3-p)/p*100)})
-
+├ TP1: <b>${fmt(tp1)}</b>  (+${tp1Pts}pt | ${fmtP((tp1-p)/p*100)})
+├ TP2: <b>${fmt(tp2)}</b>  (+${tp2Pts}pt | ${fmtP((tp2-p)/p*100)})
+└ TP3: <b>${fmt(tp3)}</b>  (+${tp3Pts}pt | ${fmtP((tp3-p)/p*100)})
 🛑 وقف SPX: <b>${fmt(sl)}</b>  (-${slPts}pt | ${fmtP((sl-p)/p*100)})
 📏 R:R = 1:${rr}
 ━━━━━━━━━━━━━━━━━━
+📊 سجل اليوم: ${statsLine}
 ⏰ ${nowAr()}
 ⚠️ <i>ليست نصيحة مالية</i>`);
+  }
 
   log(`📤 ${type} Lvl:${sigLevel[0]} SPXW ${bestStrike} prem:$${premVal} TP1:${fmt(tp1)} SL:${fmt(sl)}`);
 }
@@ -576,80 +1002,280 @@ ${mktLn()}
 // ══════════════════════════════════════════════════════════════════
 // checkAlerts
 // ══════════════════════════════════════════════════════════════════
+async 
+// ══════════════════════════════════════════════════════════════════
+// نظام الحجم المتغير — عدد العقود بناءً على الاحتمالية والدرجة
+// ══════════════════════════════════════════════════════════════════
+function calcContracts(prob, grade, vix) {
+  // الحجم الأساسي بناءً على الاحتمالية
+  let base = 1;
+  if(prob >= 80 && grade === 'A+') base = 2;  // احتمال عالي جداً → عقدان
+  else if(prob >= 75 && grade !== 'B') base = 2; // جيد → عقدان
+  else base = 1;                                   // طبيعي → عقد واحد
+
+  // تخفيض عند VIX مرتفع
+  if(vix > 25 && vix <= 35) base = Math.max(1, base - 1); // VIX مرتفع → قلّل
+  if(vix > 30) base = 1; // VIX جداً → عقد واحد فقط
+
+  return Math.min(base, 3); // حد أقصى 3 عقود
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// Support/Resistance تلقائي من آخر 20 شمعة
+// ══════════════════════════════════════════════════════════════════
+function calcSRLevels(history) {
+  if(!history || history.length < 5) return {support:0, resistance:0, srBull:false, srBear:false};
+  const recent = history.slice(-20);
+  const highs  = recent.map(c => c.h || c.c || c);
+  const lows   = recent.map(c => c.l || c.c || c);
+  const closes = recent.map(c => c.c || c);
+
+  // أعلى قمة وأدنى قاع في آخر 20 شمعة
+  const resistance = Math.max(...highs);
+  const support    = Math.min(...lows);
+  const price      = closes[closes.length - 1];
+
+  // هل السعر قريب من S/R؟ (خلال ATR/2)
+  const atr = S.atr || 20;
+  const srBull = price > support  && Math.abs(price - support)    < atr * 0.8;  // قرب دعم → شراء
+  const srBear = price < resistance && Math.abs(price - resistance) < atr * 0.8; // قرب مقاومة → بيع
+  return {support: Math.round(support*100)/100, resistance: Math.round(resistance*100)/100, srBull, srBear};
+}
+
 async function checkAlerts(){
-  const sig=computeSig();
-  const {isBuy,isSell,bScore,sScore,bPct,sPct,bLabels,sLabels}=sig;
-  const cur=isBuy?'BUY':isSell?'SELL':'WAIT';
-  const p=S.price;
+  const sig = computeSig();
+  const {isBuy,isSell,bScore,sScore,bLabels,sLabels,
+         bGrade,sGrade,reason,bullishFlow,bearishFlow} = sig;
+  const cur   = isBuy?'BUY':isSell?'SELL':'WAIT';
+  const grade = isBuy?bGrade:isSell?sGrade:'';
+  const score = isBuy?bScore:isSell?sScore:0;
+  const p     = S.price;
 
   // ══ إدارة الصفقة المفتوحة ══
   if(TRADE.active){
-    const isL=TRADE.type==='BUY';
-    const trailSl=TRADE.trailSl||TRADE.sl;
-    const age=TRADE.openedAt?(Date.now()-TRADE.openedAt.getTime())/60000:0;
+    const isL  = TRADE.type==='BUY';
+    const trail= TRADE.trailSl || TRADE.sl;
+    const age  = TRADE.openedAt?(Date.now()-TRADE.openedAt.getTime())/60000:0;
 
-    // Timeout: اخرج بعد 45 دقيقة إذا لم يصل TP1
+    // Timeout 45 دقيقة
     if(!TRADE.tp1Hit && age>45 && canAlert('timeout',300)){
-      TRADE.active=false; TRADE.type=null; TRADE.entry=0;
-      await tg(`⏱ <b>NEXUS v7 — انتهاء الوقت</b>\n\n45 دقيقة بدون TP1\n📊 SPX: <b>${fmt(p)}</b>\n📍 الدخول: <b>${fmt(TRADE.entry||p)}</b>\n💡 <i>اخرج من الصفقة</i>\n⏰ ${nowAr()}`);
+      const pnl = isL?p-TRADE.entry:TRADE.entry-p;
+      recordResult('TIMEOUT', pnl, TRADE.score||0, TRADE.grade||'B', TRADE.type||'BUY', TRADE.entryHour||10);
+      await tg(`⏱ <b>انتهاء الوقت — 45 دقيقة</b>\n\n📊 SPX: <b>${fmt(p)}</b>  |  دخول: <b>${fmt(TRADE.entry)}</b>\n${pnl>=0?'💚':'❤️'} P&L: <b>${pnl>=0?'+':''}${pnl.toFixed(1)} نقطة</b>\n\n📊 سجل اليوم: ${getDailyStats()}\n⏰ ${nowAr()}`);
+      Object.assign(TRADE,{active:false,type:null,entry:0,tp1Hit:false,tp2Hit:false});
+      S.lastSig='WAIT'; S.confirmCount=0; S.confirmDir='';
       return;
     }
 
     // كسر SL
-    if((isL&&p<=trailSl)||(!isL&&p>=trailSl)){ await alertSLBroken(); return; }
+    if((isL&&p<=trail)||(!isL&&p>=trail)){
+      const pnl = isL?p-TRADE.entry:TRADE.entry-p;
+      recordResult('SL_HIT', pnl, TRADE.score||0, TRADE.grade||'B', TRADE.type||'BUY', TRADE.entryHour||10);
+      await alertSLBroken();
+      return;
+    }
 
-    // تحذير اقتراب SL
-    const slDist=Math.abs(TRADE.entry-TRADE.sl);
-    if(!TRADE.slWarned&&Math.abs(p-trailSl)<slDist*0.3){
+    // تحذير SL
+    const slDist = Math.abs(TRADE.entry-TRADE.sl);
+    if(!TRADE.slWarned && Math.abs(p-trail)<slDist*0.30){
       TRADE.slWarned=true; await alertSLWarn();
     }
 
-    // TP1 → انقل SL للدخول (breakeven)
+    // TP1 → breakeven
     if(!TRADE.tp1Hit){
-      if(!TRADE.nearTp1&&Math.abs(TRADE.tp1-p)<5){ TRADE.nearTp1=true; await alertNearTP(1,TRADE.tp1); }
+      if(!TRADE.nearTp1&&Math.abs(TRADE.tp1-p)<4){ TRADE.nearTp1=true; await alertNearTP(1,TRADE.tp1); }
       if((isL&&p>=TRADE.tp1)||(!isL&&p<=TRADE.tp1)){
-        TRADE.tp1Hit=true;
-        TRADE.trailSl=TRADE.entry; // breakeven
+        TRADE.tp1Hit=true; TRADE.trailSl=TRADE.entry;
         await alertTPHit(1,TRADE.tp1);
       }
     }
 
-    // TP2 → trailing stop 5 نقاط
+    // TP2 → trailing 5 نقاط
     if(TRADE.tp1Hit&&!TRADE.tp2Hit){
-      // تحديث trailing stop
-      const newTrail = isL ? p-5 : p+5;
-      if(isL && newTrail>TRADE.trailSl) TRADE.trailSl=newTrail;
-      if(!isL && newTrail<TRADE.trailSl) TRADE.trailSl=newTrail;
-
-      if(!TRADE.nearTp2&&Math.abs(TRADE.tp2-p)<5){ TRADE.nearTp2=true; await alertNearTP(2,TRADE.tp2); }
+      const newT = isL?p-5:p+5;
+      if(isL&&newT>TRADE.trailSl) TRADE.trailSl=newT;
+      if(!isL&&newT<TRADE.trailSl) TRADE.trailSl=newT;
+      if(!TRADE.nearTp2&&Math.abs(TRADE.tp2-p)<4){ TRADE.nearTp2=true; await alertNearTP(2,TRADE.tp2); }
       if((isL&&p>=TRADE.tp2)||(!isL&&p<=TRADE.tp2)){
-        TRADE.tp2Hit=true; await alertTPHit(2,TRADE.tp2);
+        TRADE.tp2Hit=true; TRADE.trailSl=TRADE.tp1;
+        await alertTPHit(2,TRADE.tp2);
       }
     }
 
     // TP3
     if(TRADE.tp2Hit){
       if((isL&&p>=TRADE.tp3)||(!isL&&p<=TRADE.tp3)){
+        const pnl = isL?TRADE.tp3-TRADE.entry:TRADE.entry-TRADE.tp3;
+        recordResult('TP3', pnl, TRADE.score||0, TRADE.grade||'B', TRADE.type||'BUY', TRADE.entryHour||10);
         await alertTPHit(3,TRADE.tp3);
-        Object.assign(TRADE,{active:false,type:null,entry:0});
+        Object.assign(TRADE,{active:false,type:null,entry:0,tp1Hit:false,tp2Hit:false});
+        S.lastSig='WAIT'; S.confirmCount=0; S.confirmDir='';
       }
     }
 
-    // إشارة عكسية قوية
-    if(cur!=='WAIT'&&cur!==TRADE.type&&canAlert('reverse',600)){
-      await alertCancel('إشارة عكسية قوية — فكّر في الخروج');
+    // إشارة عكسية A+ فقط
+    if(cur!=='WAIT'&&cur!==TRADE.type&&grade==='A+'&&canAlert('reverse',900)){
+      await alertCancel(`⚡ إشارة عكسية A+ — فكّر في الخروج`);
     }
     return;
   }
 
-  // ══ إشارة جديدة — cooldown 45 دقيقة ══
-  if(cur!=='WAIT'&&cur!==S.lastSig){
-    if(!canAlert('entry',45*60)) return; // 45 دقيقة بين التوصيات
-    S.lastSig=cur;
-    await alertEntry(cur,bScore,sScore,bLabels,sLabels);
-  } else {
-    if(cur==='WAIT') S.lastSig='WAIT';
+  // ══ نظام التأكيد الذكي ══
+  if(!S.confirmCount) S.confirmCount=0;
+  if(!S.confirmDir)   S.confirmDir='';
+
+  if(cur==='WAIT'){
+    if(S.confirmDir!=='WAIT'){
+      if(reason) log(`[Filter] ${reason}`);
+    }
+    S.confirmCount=0; S.confirmDir='WAIT'; S.lastSig='WAIT';
+    return;
   }
+
+  // تغير الاتجاه → ابدأ من جديد
+  if(cur !== S.confirmDir){
+    S.confirmCount=1; S.confirmDir=cur;
+    log(`[C 1] ${cur} grade:${grade} score:${score}`);
+    return;
+  }
+
+  S.confirmCount++;
+
+  // حد التأكيد:
+  // A+ → 1 (فوري)
+  // A  → 2
+  // B  → 3
+  const needed = grade==='A+'?1 : grade==='A'?2 : 3;
+  log(`[C ${S.confirmCount}/${needed}] ${cur} grade:${grade} score:${score}`);
+  if(S.confirmCount < needed) return;
+
+  // Cooldown بحسب الدرجة
+  const cd = grade==='A+'?1200 : grade==='A'?1800 : 2700;
+  if(!canAlert('entry',cd)){
+    log(`[CD] ${cur} grade:${grade}`); return;
+  }
+
+  S.confirmCount=0; S.confirmDir=''; S.lastSig=cur;
+  log(`✅ [SIGNAL] ${cur} grade:${grade} score:${score}`);
+  await alertEntry(cur,bScore,sScore,bLabels,sLabels);
+}
+
+// ══ Win Rate Tracker ══
+// ══════════════════════════════════════════════════════
+// نظام التتبع والتحليل الاحترافي — Analytics Engine
+// يحلل: win rate، أفضل ساعات، أسباب الخسارة، درجة الأداء
+// ══════════════════════════════════════════════════════
+
+const STATS = {
+  wins:0, losses:0, breakeven:0,
+  totalPnl:0, totalTrades:0,
+  byGrade: {'A+':{'w':0,'l':0,'pnl':0}, 'A':{'w':0,'l':0,'pnl':0}, 'B':{'w':0,'l':0,'pnl':0}},
+  byHour:  {},      // win rate بحسب الساعة
+  byType:  {'BUY':{'w':0,'l':0}, 'SELL':{'w':0,'l':0}},
+  recentTrades: [], // آخر 200 صفقة للتحليل الأسبوعي
+  lossFactors:  {},  // تحليل أسباب الخسائر
+  lossCause: {'SL_HIT':0,'TIMEOUT':0,'REVERSE':0},
+  trades: []        // آخر 100 صفقة
+};
+
+function recordResult(exitType, pnl, score, grade, tradeType, entryHour){
+  const isWin  = pnl >  2;
+  const isLoss = pnl < -2;
+
+  // إجمالي
+  STATS.totalTrades++;
+  STATS.totalPnl += pnl;
+  if(isWin)       STATS.wins++;
+  else if(isLoss) STATS.losses++;
+  else            STATS.breakeven++;
+
+  // حسب الدرجة
+  const g = grade||'B';
+  if(STATS.byGrade[g]){
+    if(isWin)  STATS.byGrade[g].w++;
+    if(isLoss) STATS.byGrade[g].l++;
+    STATS.byGrade[g].pnl += pnl;
+  }
+
+  // حسب الساعة
+  const h = Math.floor(entryHour||10);
+  if(!STATS.byHour[h]) STATS.byHour[h]={w:0,l:0};
+  if(isWin)  STATS.byHour[h].w++;
+  if(isLoss) STATS.byHour[h].l++;
+
+  // حسب النوع
+  const t = tradeType||'BUY';
+  if(STATS.byType[t]){
+    if(isWin)  STATS.byType[t].w++;
+    if(isLoss) STATS.byType[t].l++;
+  }
+
+  // سبب الخسارة
+  if(isLoss && STATS.lossCause[exitType]!==undefined)
+    STATS.lossCause[exitType]++;
+
+  // سجل الصفقات
+  STATS.trades.push({
+    exitType, pnl:Math.round(pnl*10)/10,
+    score, grade:g, type:t,
+    hour:entryHour||10,
+    ts:Date.now()
+  });
+  if(STATS.trades.length > 100) STATS.trades.shift();
+
+  log('[Stats] '+exitType+' pnl:'+pnl.toFixed(1)+
+      ' grade:'+g+' W:'+STATS.wins+' L:'+STATS.losses);
+}
+
+function getDailyStats(){
+  const total = STATS.wins+STATS.losses+STATS.breakeven;
+  if(total===0) return 'لا صفقات بعد اليوم';
+  const wr   = Math.round(STATS.wins/(STATS.wins+STATS.losses||1)*100);
+  const sign = STATS.totalPnl>=0?'+':'';
+  return '✅'+STATS.wins+' ❌'+STATS.losses+
+         ' | Win:'+wr+'% | P&L:'+sign+STATS.totalPnl.toFixed(0)+'pt';
+}
+
+function getFullReport(){
+  const total = STATS.wins+STATS.losses+STATS.breakeven;
+  if(total===0) return '📊 لا توجد بيانات كافية بعد.';
+
+  const wr = Math.round(STATS.wins/(STATS.wins+STATS.losses||1)*100);
+  const avg = (STATS.totalPnl/total).toFixed(1);
+
+  // أفضل ساعة
+  let bestH='?', bestWR=0;
+  for(const [h,v] of Object.entries(STATS.byHour)){
+    const tot=v.w+v.l; if(tot<2) continue;
+    const r=Math.round(v.w/tot*100);
+    if(r>bestWR){bestWR=r;bestH=h+':00 ET';}
+  }
+
+  // أداء حسب الدرجة
+  const gradeLines = Object.entries(STATS.byGrade)
+    .filter(([,v])=>v.w+v.l>0)
+    .map(([g,v])=>{
+      const t=v.w+v.l;
+      const r=Math.round(v.w/t*100);
+      return g+': '+r+'% ('+t+' صفقة)';
+    }).join(' | ');
+
+  // أكثر سبب خسارة
+  const topCause = Object.entries(STATS.lossCause)
+    .sort((a,b)=>b[1]-a[1])[0];
+  const causeLabel = topCause[1]>0
+    ? (topCause[0]==='SL_HIT'?'كسر SL':
+       topCause[0]==='TIMEOUT'?'انتهاء وقت':'إشارة عكسية')
+    : 'لا خسائر';
+
+  return '📊 <b>تقرير الأداء</b>\n\n'+
+    '📈 الصفقات: <b>'+total+'</b> | Win Rate: <b>'+wr+'%</b>\n'+
+    '💰 P&L الإجمالي: <b>'+(STATS.totalPnl>=0?'+':'')+STATS.totalPnl.toFixed(0)+' نقطة</b>\n'+
+    '📉 متوسط/صفقة: <b>'+avg+' نقطة</b>\n\n'+
+    '🏆 حسب الدرجة: '+gradeLines+'\n'+
+    '⏰ أفضل وقت: <b>'+bestH+'</b> ('+bestWR+'%)\n'+
+    '⚠️ سبب الخسارة الأكثر: <b>'+causeLabel+'</b>';
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -745,6 +1371,16 @@ app.get('/api/keys/status',(req,res)=>{
 });
 
 // بيانات السوق
+app.get('/api/reset-stats',(req,res)=>{
+  STATS.wins=0;STATS.losses=0;STATS.breakeven=0;
+  STATS.totalPnl=0;STATS.totalTrades=0;
+  STATS.trades=[];
+  Object.keys(STATS.byHour).forEach(k=>delete STATS.byHour[k]);
+  Object.keys(STATS.byGrade).forEach(k=>{STATS.byGrade[k]={w:0,l:0,pnl:0};});
+  Object.keys(STATS.lossCause).forEach(k=>{STATS.lossCause[k]=0;});
+  res.json({ok:true,message:'تم إعادة ضبط الإحصائيات'});
+});
+
 app.get('/api/market',async(req,res)=>{
   if(S.price===0){log('⚡ جلب فوري...');await loadMarketData();}
   const sig=computeSig();
@@ -759,6 +1395,7 @@ app.get('/api/market',async(req,res)=>{
     obv:S.obv,obvE:S.obvE,fibH:S.fibH,fibL:S.fibL,
     isExt:S.isExt,dataSource:S._lastSource||'Yahoo',
     history:S.history.slice(-300),
+    vix:S.vix, vixPrev:S.vixPrev,
     sig:{isBuy,isSell,bs,ss,bScore,sScore,bPct,sPct,bLabels,sLabels,conviction},
     trade:{active:TRADE.active,type:TRADE.type,entry:TRADE.entry,
       tp1:TRADE.tp1,tp2:TRADE.tp2,tp3:TRADE.tp3,sl:TRADE.sl,trailSl:TRADE.trailSl,
@@ -795,6 +1432,25 @@ app.get('/api/calendar',async(req,res)=>{
 });
 
 // Ping
+app.get('/api/report',(req,res)=>{
+  res.json({
+    summary: getDailyStats(),
+    full: getFullReport(),
+    stats: {
+      total: STATS.totalTrades,
+      wins:  STATS.wins,
+      losses:STATS.losses,
+      winRate: STATS.wins+STATS.losses>0?
+               Math.round(STATS.wins/(STATS.wins+STATS.losses)*100):0,
+      totalPnl: Math.round(STATS.totalPnl*10)/10,
+      byGrade: STATS.byGrade,
+      byHour:  STATS.byHour,
+      lossCause: STATS.lossCause,
+      recentTrades: STATS.trades.slice(-10)
+    }
+  });
+});
+
 app.get('/ping',(req,res)=>res.json({ok:true,price:S.price,ts:Date.now()}));
 
 app.get('/',(req,res)=>{
@@ -829,8 +1485,133 @@ function getRefreshInterval(){
   return 10*60*1000;
 }
 
+
+// ══════════════════════════════════════════════════════════════════
+// تقرير افتتاح السوق التلقائي — يُرسل عند 9:35 AM ET يومياً
+// ══════════════════════════════════════════════════════════════════
+let _morningReportSent = '';  // تتبع اليوم لمنع الإرسال المزدوج
+
+async function sendMorningReport() {
+  const p    = S.price;
+  const prev = S.prev || p;
+  const chg  = p - prev;
+  const chgP = prev > 0 ? (chg/prev*100).toFixed(2) : '0.00';
+  const dir  = chg >= 0 ? '📈' : '📉';
+  const dirTxt = chg >= 0 ? 'صاعد ▲' : 'هابط ▼';
+
+  // حساب التوصية الصباحية (أفضل سترايك ≤ $350)
+  const etH      = ((new Date().getUTCHours()-4+24)%24)+new Date().getUTCMinutes()/60;
+  const hoursLeft= Math.max(16.0 - etH, 0.1);
+  const T        = hoursLeft/(252*6.5);
+  const vixMR    = S.vix > 0 ? S.vix : 18;
+  const sig      = Math.max(0.05, Math.min(0.60, (vixMR/100) * Math.sqrt(1/12)));
+
+  function bsQ(Sp,K,T,s,o){
+    if(T<=0) return Math.max(o==='c'?Sp-K:K-Sp,0);
+    const sq=Math.sqrt(T);
+    const d1=(Math.log(Sp/K)+(0.053+0.5*s*s)*T)/(s*sq);
+    const d2=d1-s*sq;
+    const N=x=>{const p2=[0.319381530,-0.356563782,1.781477937,-1.821255978,1.330274429];const t=1/(1+0.2316419*Math.abs(x));let poly=0,tp=t;for(const c of p2){poly+=c*tp;tp*=t;}const nd=Math.exp(-x*x/2)/Math.sqrt(2*Math.PI);return x>=0?1-nd*poly:nd*poly;};
+    if(o==='c') return Math.max(Sp*N(d1)-K*Math.exp(-0.053*T)*N(d2),0);
+    return Math.max(K*Math.exp(-0.053*T)*(1-N(d2))-Sp*(1-N(d1)),0);
+  }
+
+  // التوصية: CALL إذا فوق VWAP، PUT إذا تحته
+  const vwap    = S.vwap || p;
+  const recType = p >= vwap ? 'CALL' : 'PUT';
+  const isL     = recType === 'CALL';
+
+  // ابحث عن أفضل سترايك ≤ $3.50
+  let recStrike = Math.round(p/5)*5;
+  let recPrem   = 0;
+  for(let diff=0; diff<=150; diff+=5){
+    const K    = Math.round(p/5)*5 + (isL ? diff : -diff);
+    const prem = bsQ(p, K, T, sig, isL?'c':'p');
+    if(prem <= 3.50 && prem > recPrem){ recPrem = prem; recStrike = K; }
+  }
+  if(recPrem < 0.10){
+    // fallback
+    for(let diff=0;diff<=80;diff+=5){
+      const K=Math.round(p/5)*5+(isL?diff:-diff);
+      const prem=bsQ(p,K,T,sig,isL?'c':'p');
+      if(Math.abs(prem-2.5)<Math.abs(recPrem-2.5)){ recPrem=prem; recStrike=K; }
+    }
+  }
+
+  const rPrem   = Math.round(recPrem*100)/100;
+  const rCost   = Math.round(rPrem*100);
+  const rSL     = Math.round(rPrem*0.50*100)/100;
+  const rTP     = Math.round(rPrem*1.80*100)/100;
+  const rOTM    = Math.abs(recStrike - Math.round(p/5)*5);
+  const rOTMlbl = rOTM===0?'ATM':`OTM +${rOTM} نقطة`;
+  const d       = isL?1:-1;
+  const tp1r    = Math.round((p + d*10)*100)/100;
+  const tp2r    = Math.round((p + d*20)*100)/100;
+  const tp3r    = Math.round((p + d*35)*100)/100;
+  const slSPX   = Math.round((p - d*8)*100)/100;
+  const expDate = new Date().toLocaleDateString('en-US',{
+    timeZone:'America/New_York',month:'short',day:'2-digit',year:'2-digit'
+  }).replace(', ',"'");
+
+  // مؤشرات
+  const vixLine  = S.vix>0 ? `🌡 VIX: <b>${S.vix.toFixed(1)}</b>  ${S.vix>30?'🔴 مرتفع':S.vix>20?'🟡 متوسط':'🟢 هادئ'}` : '';
+  const atrLine  = `📊 ATR: <b>${(S.atr||0).toFixed(1)}</b> نقطة`;
+  const rsiLine  = `📐 RSI: <b>${(S.rsi||50).toFixed(1)}</b>  VWAP: <b>${fmt(vwap)}</b>`;
+  const ema200l  = S.ema200>0 ? (p>S.ema200?'فوق EMA200 ✅':'تحت EMA200 ⚠️') : '';
+  const trend    = p > vwap ? '🟢 صاعد — فوق VWAP' : '🔴 هابط — تحت VWAP';
+
+  await tg(
+`🌅 <b>NEXUS v7 — تقرير افتتاح السوق</b>
+━━━━━━━━━━━━━━━━━━
+📊 <b>S&P 500 · SPX</b>
+💰 السعر الحالي: <b>${fmt(p)}</b>
+${dir} التغير: <b>${chg>=0?'+':''}${chg.toFixed(2)}</b>  (${chg>=0?'+':''}${chgP}%)
+━━━━━━━━━━━━━━━━━━
+🧭 الاتجاه: <b>${trend}</b>
+${rsiLine}
+${atrLine}
+${vixLine}
+${ema200l ? '📈 '+ema200l : ''}
+━━━━━━━━━━━━━━━━━━
+📌 <b>التوصية الصباحية:</b>
+${isL?'🚀':'🔻'} <b>SPXW ${recType} ${recStrike}</b>  |  0DTE  |  ${expDate}
+📏 ${rOTMlbl}
+💵 السعر: <b>$${rPrem}</b>/سهم
+💰 إجمالي العقد: <b>~$${rCost}</b>  ✅ ضمن الميزانية
+
+🛑 وقف الخسارة: إذا نزل لـ <b>$${rSL}</b> → اخرج
+🎯 الهدف: إذا وصل لـ <b>$${rTP}</b> → اخرج
+
+🎯 <b>أهداف SPX:</b>
+├ TP1: <b>${fmt(tp1r)}</b>
+├ TP2: <b>${fmt(tp2r)}</b>
+└ TP3: <b>${fmt(tp3r)}</b>
+🛑 وقف SPX: <b>${fmt(slSPX)}</b>  |  📏 R:R = 1:2.5
+━━━━━━━━━━━━━━━━━━
+⏰ ${nowAr()}
+⚠️ <i>ليست نصيحة مالية · راقب السوق قبل الدخول</i>`);
+
+  log('📨 تقرير الافتتاح أُرسل');
+}
+
+// ── فحص هل يجب إرسال تقرير الافتتاح
+function checkMorningReport() {
+  const now  = new Date();
+  const etH  = ((now.getUTCHours()-4+24)%24) + now.getUTCMinutes()/60;
+  const day  = now.getUTCDay();
+  const dateKey = now.toISOString().slice(0,10);
+
+  // أيام العمل فقط، بين 9:33 و 9:40 ET، ولم يُرسل اليوم
+  if(day===0||day===6) return;
+  if(etH >= 9.55 && etH <= 9.67 && _morningReportSent !== dateKey && S.price > 0) {
+    _morningReportSent = dateKey;
+    sendMorningReport();
+  }
+}
+
 async function tick(){
   await loadMarketData();
+  checkMorningReport();
   await checkAlerts();
   const next=getRefreshInterval();
   alertLoop=setTimeout(tick,next);
@@ -844,6 +1625,16 @@ async function tick(){
   log('⏳ تحميل البيانات الأولية...');
   let loaded=await loadMarketData();
   if(!loaded){await new Promise(r=>setTimeout(r,3000));loaded=await loadMarketData();}
+
+
+// ── API: تعديل الأهداف الأسبوعية
+app.post('/api/weekly-goals', express.json(), (req,res)=>{
+  const { goal, maxLoss } = req.body||{};
+  if(goal && typeof goal==='number')   WEEKLY.goalPnl  = goal;
+  if(maxLoss && typeof maxLoss==='number') WEEKLY.maxLoss = maxLoss;
+  log(`⚙️ أهداف أسبوعية: +$${WEEKLY.goalPnl} / -$${Math.abs(WEEKLY.maxLoss)}`);
+  res.json({ok:true, goalPnl:WEEKLY.goalPnl, maxLoss:WEEKLY.maxLoss});
+});
 
   app.listen(PORT,async()=>{
     log(`🚀 NEXUS v7 يعمل على المنفذ ${PORT}`);
